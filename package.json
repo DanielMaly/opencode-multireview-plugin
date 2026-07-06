@@ -1,0 +1,52 @@
+{
+  "name": "opencode-multireview-plugin",
+  "version": "0.1.0",
+  "description": "OpenCode plugin bundling multireview agents and Plannotator review skills.",
+  "type": "module",
+  "main": "dist/index.js",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "opencode-multireview-parse-findings": "./assets/scripts/parse-review-findings.mjs",
+    "opencode-multireview-build-explainer": "./assets/scripts/build-explainer.mjs",
+    "opencode-multireview-build-code-annotations": "./assets/scripts/build-code-annotations.mjs"
+  },
+  "files": [
+    "dist/",
+    "assets/agents/",
+    "assets/scripts/",
+    "assets/skills/",
+    "config/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "pretest": "npm run build",
+    "test": "node --test test/*.test.js",
+    "prepack": "npm run build",
+    "postinstall": "for d in ./assets/skills/*/; do n=$(basename \"$d\"); mkdir -p \"${XDG_CONFIG_HOME:-$HOME/.config}/opencode/skills/$n\" && cp -r \"$d.\" \"${XDG_CONFIG_HOME:-$HOME/.config}/opencode/skills/$n/\"; done 2>/dev/null || true"
+  },
+  "keywords": [
+    "opencode",
+    "plugin",
+    "code-review",
+    "plannotator"
+  ],
+  "license": "MIT",
+  "peerDependencies": {
+    "@plannotator/opencode": "*"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "^1.14.20",
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.3"
+  }
+}

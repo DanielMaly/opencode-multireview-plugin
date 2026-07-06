@@ -1,0 +1,11 @@
+{
+  "models": {
+    "coordinator": "github-copilot/claude-opus-4.6",
+    "codestyle": "github-copilot/claude-sonnet-4.6",
+    "correctness": "github-copilot/gpt-5.2",
+    "testing": "github-copilot/gemini-3.1-pro-preview"
+  },
+  "plannotator": {
+    "requirePlugin": true
+  }
+}
