@@ -3,14 +3,14 @@ import assert from "node:assert/strict";
 import { MultireviewPlugin } from "../dist/index.js";
 
 test("fails when Plannotator plugin is not configured by default", async () => {
-  const plugin = await MultireviewPlugin({}, {});
+  const plugin = await MultireviewPlugin({}, { configPath: "/nonexistent/multireview-plugin.json" });
   const cfg = { plugin: ["opencode-multireview-plugin"] };
 
   await assert.rejects(() => plugin.config(cfg), /requires @plannotator\/opencode/);
 });
 
 test("registers agents without removing existing config", async () => {
-  const plugin = await MultireviewPlugin({}, {});
+  const plugin = await MultireviewPlugin({}, { configPath: "/nonexistent/multireview-plugin.json" });
   const cfg = {
     plugin: ["opencode-multireview-plugin", ["@plannotator/opencode@latest", { workflow: "all-agents" }]],
     agent: {
@@ -28,7 +28,10 @@ test("registers agents without removing existing config", async () => {
 });
 
 test("can disable the Plannotator config check for development", async () => {
-  const plugin = await MultireviewPlugin({}, { plannotator: { requirePlugin: false } });
+  const plugin = await MultireviewPlugin(
+    {},
+    { configPath: "/nonexistent/multireview-plugin.json", plannotator: { requirePlugin: false } },
+  );
   const cfg = { plugin: ["opencode-multireview-plugin"] };
 
   await plugin.config(cfg);

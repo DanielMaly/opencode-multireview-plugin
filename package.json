@@ -41,6 +41,15 @@
     "plannotator"
   ],
   "license": "MIT",
+  "author": "Daniel Maly",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DanielMaly/opencode-multireview-plugin.git"
+  },
+  "homepage": "https://github.com/DanielMaly/opencode-multireview-plugin#readme",
+  "bugs": {
+    "url": "https://github.com/DanielMaly/opencode-multireview-plugin/issues"
+  },
   "peerDependencies": {
     "@plannotator/opencode": "*"
   },

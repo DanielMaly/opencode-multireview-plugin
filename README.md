@@ -7,11 +7,11 @@ Local-first, npm-ready OpenCode plugin that bundles the `multireview` agent set 
 
 The package injects the four agents directly through the OpenCode config hook. Bundled skills are installed by the package `postinstall` script, which copies them into `${XDG_CONFIG_HOME:-$HOME/.config}/opencode/skills`.
 
-## Install locally
+## Install
 
 ```bash
 cd ~/.config/opencode
-npm install /Users/daniel.maly/CodePersonal/opencode-multireview-plugin
+npm install opencode-multireview-plugin
 ```
 
 Then configure OpenCode with Plannotator first:
@@ -25,18 +25,28 @@ Then configure OpenCode with Plannotator first:
 }
 ```
 
-For direct local testing after building:
+Restart OpenCode after changing plugin configuration.
+
+## Install from a local checkout
+
+For development or before a version is published, install directly from a local path:
+
+```bash
+cd ~/.config/opencode
+npm install /path/to/opencode-multireview-plugin
+```
+
+Or reference the built plugin file directly:
 
 ```json
 {
   "plugin": [
     ["@plannotator/opencode@latest", { "workflow": "all-agents" }],
-    "file:///Users/daniel.maly/CodePersonal/opencode-multireview-plugin/dist/index.js"
+    "file:///path/to/opencode-multireview-plugin/dist/index.js"
   ]
 }
 ```
 
-Restart OpenCode after changing plugin configuration.
 
 ## Bundled skills
 
@@ -121,6 +131,8 @@ npm test
 npm pack --dry-run
 ```
 
-## Publishing notes
+## Publishing
 
-The package is structured for npm publishing: ESM TypeScript output is emitted to `dist/`, assets and config defaults are included via `package.json.files`, and CLI bins point at bundled asset scripts. Before publishing, set repository metadata and choose the intended access policy.
+Releases are published to npm via a GitHub Actions workflow (`.github/workflows/publish.yml`) using npm's trusted publishing (OIDC), triggered when a GitHub Release is published. No long-lived npm token is stored in the repository.
+
+To cut a release: bump `version` in `package.json`, merge to `main`, then create a matching GitHub Release/tag (e.g. `v0.2.0`). The workflow builds, tests, and publishes automatically.
