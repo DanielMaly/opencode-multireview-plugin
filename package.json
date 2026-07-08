@@ -31,6 +31,8 @@
     "typecheck": "tsc --noEmit",
     "pretest": "npm run build",
     "test": "node --test test/*.test.js",
+    "release": "release-it",
+    "release:dry-run": "release-it --dry-run",
     "prepack": "npm run build",
     "postinstall": "for d in ./assets/skills/*/; do n=$(basename \"$d\"); mkdir -p \"${XDG_CONFIG_HOME:-$HOME/.config}/opencode/skills/$n\" && cp -r \"$d.\" \"${XDG_CONFIG_HOME:-$HOME/.config}/opencode/skills/$n/\"; done 2>/dev/null || true"
   },
@@ -56,6 +58,29 @@
   "devDependencies": {
     "@opencode-ai/plugin": "^1.14.20",
     "@types/node": "^24.0.0",
+    "auto-changelog": "^2.5.0",
+    "release-it": "^19.0.4",
     "typescript": "^5.9.3"
+  },
+  "release-it": {
+    "git": {
+      "changelog": "npx auto-changelog --stdout --commit-limit false --unreleased --template https://raw.githubusercontent.com/release-it/release-it/main/templates/changelog-compact.hbs",
+      "commitMessage": "Release v${version}",
+      "tagName": "v${version}",
+      "requireCleanWorkingDir": true,
+      "requireUpstream": true,
+      "commit": true,
+      "tag": true,
+      "push": true
+    },
+    "npm": {
+      "publish": false
+    },
+    "hooks": {
+      "before:init": [
+        "npm test"
+      ],
+      "after:bump": "npx auto-changelog --commit-limit false --template https://raw.githubusercontent.com/release-it/release-it/main/templates/keepachangelog.hbs"
+    }
   }
 }

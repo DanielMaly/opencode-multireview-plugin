@@ -131,8 +131,29 @@ npm test
 npm pack --dry-run
 ```
 
+## CI
+
+GitHub Actions runs `.github/workflows/ci.yml` on pushes to `main` and on pull requests:
+
+```bash
+npm install
+npm test
+```
+
 ## Publishing
 
-Releases are published to npm via a GitHub Actions workflow (`.github/workflows/publish.yml`) using npm's trusted publishing (OIDC), triggered when a GitHub Release is published. No long-lived npm token is stored in the repository.
+Releases are published to npm via a GitHub Actions workflow (`.github/workflows/publish.yml`) using npm's trusted publishing (OIDC), triggered when a `vX.Y.Z` tag is pushed. The same workflow also creates the GitHub Release automatically. No long-lived npm token is stored in the repository.
 
-To cut a release: bump `version` in `package.json`, merge to `main`, then create a matching GitHub Release/tag (e.g. `v0.2.0`). The workflow builds, tests, and publishes automatically.
+Cut releases with `release-it`, which bumps `package.json`, updates `CHANGELOG.md`, and creates and pushes the `vX.Y.Z` tag:
+
+```bash
+npm run release
+```
+
+To preview the release without changing anything:
+
+```bash
+npm run release:dry-run
+```
+
+Once the tag is pushed, `.github/workflows/publish.yml` creates the GitHub Release, builds, tests, and publishes the package to npm.
