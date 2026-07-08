@@ -52,19 +52,20 @@ The generated HTML intentionally reuses `plannotator-visual-explainer`'s design 
      --manifest "$SCRATCH"/manifest.json \
      --out "$SCRATCH"/explainer.html
    ```
+   The generated page follows the parent PR explainer structure: each changed file renders its Pierre diff inline, then attaches matched multireview findings as review bubbles under that diff. Ignored findings carried from a prior `REVIEW_FINDINGS.md` appear as dimmed, struck-through bubbles with their `wontfix` reason. Findings that cannot be matched to a changed file render in a conditional **General findings** section after the file tour.
 
-8. **Launch Plannotator** — Start annotate mode, wait for it to be ready, then open the browser yourself. There is no draft payload to preload and no `/api/draft` POST; the reviewer can select text in the rendered findings or narrative and add native Plannotator comments directly:
+8. **Launch Plannotator** — Start annotate mode, wait for it to be ready, then open the browser yourself. There is no draft payload to preload and no `/api/draft` POST; the reviewer can select text in the rendered finding bubbles or narrative and add native Plannotator comments directly:
    ```bash
    rm -f "$SCRATCH"/ready.json "$SCRATCH"/plannotator.log
    PLANNOTATOR_READY_FILE="$SCRATCH"/ready.json plannotator annotate "$SCRATCH"/explainer.html --json > "$SCRATCH"/plannotator.log 2>&1 &
    ```
    Poll until `ready.json` exists in `$SCRATCH`, parse its `url` or `port`, then run `open "http://localhost:<port>"`. Wait for the Plannotator process to exit, then read the last JSON line from the logfile. That line is `{"decision":"...","feedback":"...","annotations":[...]}` or an equivalent submitted result.
 
-9. **Read returned feedback** — The returned `annotations` are the reviewer's own native Plannotator comments from selecting text in the plain-content findings or narrative. They are not preloaded annotations. First check whether the session actually produced a submission at all: if the returned `feedback` is empty/missing, or `decision` is anything other than an explicit submission (e.g. the user closed the tab, the process was killed, or it timed out), **stop here and do not touch `REVIEW_FINDINGS.md`**. Report to the user that no review feedback was submitted and leave everything as-is.
+9. **Read returned feedback** — The returned `annotations` are the reviewer's own native Plannotator comments from selecting text in the rendered finding bubbles or narrative. They are not preloaded annotations. First check whether the session actually produced a submission at all: if the returned `feedback` is empty/missing, or `decision` is anything other than an explicit submission (e.g. the user closed the tab, the process was killed, or it timed out), **stop here and do not touch `REVIEW_FINDINGS.md`**. Report to the user that no review feedback was submitted and leave everything as-is.
 
 10. **Triage returned feedback** — A finding is Valid by default unless a wontfix signal is received. There is no "absence = dismissed" behavior.
 
-   For each returned `annotations[]` entry, attribute it to a finding by checking whether the annotation's `originalText` (the reviewer's exact text selection) is a substring of exactly one rendered finding block: visible `[MULTIREVIEW-<n>]` tag + title + explanation. If the selection spans multiple findings or matches none uniquely, treat the annotation as general/ad-hoc feedback instead of attributing it to a specific finding.
+   For each returned `annotations[]` entry, attribute it to a finding by checking whether the annotation's `originalText` (the reviewer's exact text selection) is a substring of exactly one rendered finding bubble: visible `[MULTIREVIEW-<n>]` tag + title + explanation. The bubble may live inside a file card or in the **General findings** section. If the selection spans multiple findings or matches none uniquely, treat the annotation as general/ad-hoc feedback instead of attributing it to a specific finding.
 
    Then apply these rules:
    - Annotation attributed to a finding and the comment text contains `wontfix` case-insensitively → move that finding to Ignored Findings. If `wontfix:` has a colon, use the text after the colon as the reason; otherwise use the whole comment.

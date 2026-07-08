@@ -185,19 +185,46 @@ function paragraphs(text) {
     .join("<br><br>");
 }
 
-function renderFinding(item) {
+function renderFinding(item, { dismissed = false, includeLocation = true } = {}) {
   const location = item.locationHref
     ? `<a class="anchor" href="#${item.locationHref}">${html(item.locationLabel)}</a>`
     : `<span class="anchor">${html(item.locationLabel)}</span>`;
   const wontfix = item.wontfix ? `<p><strong>Wontfix:</strong> ${paragraphs(item.wontfix)}</p>` : "";
+  const locationMarkup = includeLocation ? `<span class="anchor">${location}</span>` : "";
 
-  return `<div class="bubble ${bubbleClass(item.severity)}">
+  return `<div class="bubble ${bubbleClass(item.severity)}${dismissed ? " dismissed" : ""}">
     <span class="anchor">${html(item.tag)}</span>
     <span class="severity">${html(item.severity)}</span>
-    <span class="anchor">${location}</span>
-    <p><strong>${html(item.title)}</strong>${item.explanation ? ` — ${paragraphs(item.explanation)}` : ""}</p>
+    ${locationMarkup}
+    <p><strong class="bubble-title">${html(item.title)}</strong>${item.explanation ? ` — ${paragraphs(item.explanation)}` : ""}</p>
     ${wontfix}
   </div>`;
+}
+
+function renderDiffBlock(file) {
+  const patchId = `${file.id}-patch`;
+  const patchJson = JSON.stringify(file.patch).replaceAll("</", "<\\/");
+
+  return `<div class="diff-block">
+    <script type="application/json" id="${patchId}">${patchJson}</script>
+    <diffs-container data-patch-id="${patchId}"></diffs-container>
+  </div>`;
+}
+
+function renderComments(validFindings, ignoredFindings, options = {}) {
+  const bubbles = [
+    ...validFindings.map((finding) => renderFinding(finding, options)),
+    ...ignoredFindings.map((finding) => renderFinding(finding, { ...options, dismissed: true })),
+  ];
+
+  return bubbles.length ? `<div class="comments">${bubbles.join("\n")}</div>` : "";
+}
+
+function renderFindingList(validFindings, ignoredFindings, options = {}) {
+  return [
+    ...validFindings.map((finding) => renderFinding(finding, options)),
+    ...ignoredFindings.map((finding) => renderFinding(finding, { ...options, dismissed: true })),
+  ].join("\n");
 }
 
 function renderFile(file, manifest) {
@@ -212,7 +239,9 @@ function renderFile(file, manifest) {
     <span class="risk-tag ${file.risk}">${file.risk}</span>
   </div>`;
   const whyBlock = why ? `<div class="file-why"><p>${paragraphs(why)}</p></div>` : "";
-  const body = whyBlock;
+  const body = `${whyBlock}
+  ${renderDiffBlock(file)}
+  ${renderComments(file.validFindings ?? [], file.ignoredFindings ?? [])}`;
 
   if (file.risk === "safe") {
     return `<details class="file-collapsed" id="${file.id}">
@@ -232,19 +261,21 @@ function renderFile(file, manifest) {
 </div>`;
 }
 
-function renderFindingsSection(number, title, findings, emptyText) {
+function renderGeneralFindings(number, validFindings, ignoredFindings) {
+  if (validFindings.length === 0 && ignoredFindings.length === 0) return "";
+
   return `<section>
-  <div class="section-header"><span class="section-number">${number}</span><h2>${html(title)}</h2></div>
+  <div class="section-header"><span class="section-number">${number}</span><h2>General findings</h2></div>
   <div class="finding-list">
-    ${findings.length ? findings.map(renderFinding).join("\n") : `<p class="empty-state">${html(emptyText)}</p>`}
+    ${renderFindingList(validFindings, ignoredFindings, { includeLocation: false })}
   </div>
 </section>`;
 }
 
-function renderFocusItems(items) {
+function renderFocusItems(number, items) {
   if (!Array.isArray(items) || items.length === 0) return "";
   return `<section>
-  <div class="section-header"><span class="section-number">06</span><h2>Where to focus</h2></div>
+  <div class="section-header"><span class="section-number">${number}</span><h2>Where to focus</h2></div>
   <div class="focus-list">
     ${items
       .map(
@@ -258,10 +289,10 @@ function renderFocusItems(items) {
 </section>`;
 }
 
-function renderTestPlan(items) {
+function renderTestPlan(number, items) {
   if (!Array.isArray(items) || items.length === 0) return "";
   return `<section>
-  <div class="section-header"><span class="section-number">07</span><h2>Test plan</h2></div>
+  <div class="section-header"><span class="section-number">${number}</span><h2>Test plan</h2></div>
   <div class="test-list">
     ${items
       .map(
@@ -277,10 +308,10 @@ function renderTldr(tldr) {
   return `<div class="tldr"><h3>TL;DR</h3><p>${paragraphs(tldr)}</p></div>`;
 }
 
-function renderWhy(why) {
+function renderWhy(number, why) {
   if (!why?.before && !why?.after) return "";
   return `<section>
-      <div class="section-header"><span class="section-number">01</span><h2>Why</h2></div>
+      <div class="section-header"><span class="section-number">${number}</span><h2>Why</h2></div>
       <div class="before-after">
         <div class="ba-panel before"><h4>Before</h4><p>${paragraphs(why?.before || "")}</p></div>
         <div class="ba-panel after"><h4>After</h4><p>${paragraphs(why?.after || "")}</p></div>
@@ -288,9 +319,21 @@ function renderWhy(why) {
     </section>`;
 }
 
-function renderHtml({ manifest, files, validFindings, ignoredFindings }) {
+function renderHtml({ manifest, files, unmatchedValidFindings, unmatchedIgnoredFindings }) {
   const totalAdditions = files.reduce((sum, file) => sum + file.additions, 0);
   const totalDeletions = files.reduce((sum, file) => sum + file.deletions, 0);
+  const sections = {};
+  let nextSection = 1;
+  if (manifest.why?.before || manifest.why?.after) {
+    sections.why = String(nextSection++).padStart(2, "0");
+  }
+  sections.files = String(nextSection++).padStart(2, "0");
+  if (unmatchedValidFindings.length || unmatchedIgnoredFindings.length) {
+    sections.general = String(nextSection++).padStart(2, "0");
+  }
+  sections.risk = String(nextSection++).padStart(2, "0");
+  sections.focus = String(nextSection++).padStart(2, "0");
+  sections.test = String(nextSection++).padStart(2, "0");
 
   return `<!doctype html>
 <html lang="en">
@@ -298,6 +341,33 @@ function renderHtml({ manifest, files, validFindings, ignoredFindings }) {
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>${html(manifest.prTitle || "PR explainer")}</title>
+  <script type="module">
+    import { getSingularPatch, registerDiffsComponent } from 'https://cdn.jsdelivr.net/npm/@pierre/diffs@1.1.21/+esm';
+    registerDiffsComponent();
+
+    document.querySelectorAll('diffs-container[data-patch-id]').forEach((container) => {
+      const patchElement = document.getElementById(container.dataset.patchId);
+      if (!patchElement) return;
+
+      const patch = JSON.parse(patchElement.textContent);
+      container.fileDiff = getSingularPatch(patch);
+      container.options = {
+        themeType: window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light',
+        diffStyle: 'unified',
+        diffIndicators: 'bars',
+        lineDiffType: 'word-alt',
+        unsafeCSS: \`
+          :host {
+            --diffs-bg: var(--background);
+            --diffs-fg: var(--foreground);
+            border-radius: var(--radius);
+            border: 1.5px solid var(--border);
+            overflow: hidden;
+          }
+        \`,
+      };
+    });
+  </script>
   <style>
 :root {
   --background: oklch(0.97 0.005 260);
@@ -497,6 +567,20 @@ details[open] summary::before { transform: rotate(90deg); }
 .bubble.nit { border-left-color: var(--border); }
 .bubble.suggestion { border-left-color: var(--success); }
 
+.bubble.dismissed {
+  border-left-color: var(--muted-foreground);
+  opacity: 0.65;
+}
+
+.bubble.dismissed::before {
+  border-left-color: var(--muted-foreground);
+  border-bottom-color: var(--muted-foreground);
+}
+
+.bubble.dismissed .bubble-title {
+  text-decoration: line-through;
+}
+
 .bubble::before {
   content: "";
   position: absolute;
@@ -539,6 +623,18 @@ details[open] summary::before { transform: rotate(90deg); }
   font-size: 0.88rem;
   line-height: 1.55;
   color: var(--foreground);
+}
+
+.diff-block {
+  background: var(--background);
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+diffs-container {
+  display: block;
+  border-radius: var(--radius);
+  overflow: hidden;
 }
 
 .bubble code {
@@ -875,26 +971,24 @@ details[open] summary::before { transform: rotate(90deg); }
 
     ${renderTldr(manifest.tldr)}
 
-    ${renderWhy(manifest.why)}
+    ${renderWhy(sections.why, manifest.why)}
 
     <section>
-      <div class="section-header"><span class="section-number">02</span><h2>File tour</h2></div>
+      <div class="section-header"><span class="section-number">${sections.files}</span><h2>File tour</h2></div>
       ${files.map((file) => renderFile(file, manifest)).join("\n")}
     </section>
 
-    ${renderFindingsSection("03", "Valid Findings", validFindings, "No valid findings.")}
-
-    ${renderFindingsSection("04", "Ignored Findings", ignoredFindings, "No ignored findings.")}
+    ${renderGeneralFindings(sections.general, unmatchedValidFindings, unmatchedIgnoredFindings)}
 
     <section>
-      <div class="section-header"><span class="section-number">05</span><h2>Risk map</h2></div>
+      <div class="section-header"><span class="section-number">${sections.risk}</span><h2>Risk map</h2></div>
       <div class="risk-map">
         ${files.map((file) => `<a href="#${file.id}" class="chip ${file.risk}"><span class="dot"></span>${html(file.path)}</a>`).join("\n")}
       </div>
     </section>
 
-    ${renderFocusItems(manifest.focusItems)}
-    ${renderTestPlan(manifest.testPlan)}
+    ${renderFocusItems(sections.focus, manifest.focusItems)}
+    ${renderTestPlan(sections.test, manifest.testPlan)}
   </div>
 </body>
 </html>
@@ -907,43 +1001,62 @@ function main() {
   const diffText = readFileSync(args.diff, "utf8");
   const manifest = JSON.parse(readFileSync(args.manifest, "utf8"));
   const files = parseDiff(diffText);
-  const validFindings = [];
-  const ignoredFindings = [];
+  const unmatchedValidFindings = [];
+  const unmatchedIgnoredFindings = [];
+
+  for (const file of files) {
+    file.validFindings = [];
+    file.ignoredFindings = [];
+  }
 
   for (const finding of findings.valid) {
     const { file, line } = matchFindingToFile(finding, files);
     const explanationText = explanation(finding.body);
     const locationLabel = file ? `${file.path}${line ? `:${line}` : ""}` : "general";
-
-    if (file) {
-      file.risk = higherRisk(file.risk, riskForSeverity(finding.severity));
-    }
-
-    validFindings.push({
+    const renderedFinding = {
       ...finding,
       tag: `[${finding.id}]`,
       explanation: explanationText,
       locationLabel,
       locationHref: file?.id ?? null,
-    });
+    };
+
+    if (file) {
+      file.risk = higherRisk(file.risk, riskForSeverity(finding.severity));
+      file.validFindings.push(renderedFinding);
+    } else {
+      unmatchedValidFindings.push(renderedFinding);
+    }
   }
 
   findings.ignored.forEach((finding, index) => {
-    ignoredFindings.push({
+    const { file, line } = matchFindingToFile(finding, files);
+    const locationLabel = file ? `${file.path}${line ? `:${line}` : ""}` : "general";
+    const renderedFinding = {
       ...finding,
       tag: `[IGNORED-${index + 1}]`,
       explanation: explanation(finding.body),
-      locationLabel: "ignored",
-      locationHref: null,
-    });
+      locationLabel,
+      locationHref: file?.id ?? null,
+    };
+
+    if (file) {
+      file.ignoredFindings.push(renderedFinding);
+    } else {
+      unmatchedIgnoredFindings.push(renderedFinding);
+    }
   });
 
-  writeFileSync(args.out, renderHtml({ manifest, files, validFindings, ignoredFindings }), "utf8");
+  writeFileSync(
+    args.out,
+    renderHtml({ manifest, files, unmatchedValidFindings, unmatchedIgnoredFindings }),
+    "utf8"
+  );
 
-  const linked = validFindings.filter((finding) => finding.locationHref).length;
-  const general = findings.valid.length - linked;
+  const validAttached = files.reduce((sum, file) => sum + file.validFindings.length, 0);
+  const ignoredAttached = files.reduce((sum, file) => sum + file.ignoredFindings.length, 0);
   console.error(
-    `${files.length} files, ${linked}/${findings.valid.length} valid findings linked to a file (${general} general), ${findings.ignored.length} ignored`
+    `${files.length} files, ${validAttached}/${findings.valid.length} valid findings attached (${unmatchedValidFindings.length} general), ${ignoredAttached}/${findings.ignored.length} ignored attached (${unmatchedIgnoredFindings.length} general)`
   );
 }
 
