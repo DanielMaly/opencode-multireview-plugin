@@ -7,6 +7,25 @@ Local-first, npm-ready OpenCode plugin that bundles the `multireview` agent set 
 
 The package injects the four agents directly through the OpenCode config hook. Bundled skills are installed by the package `postinstall` script, which copies them into `${XDG_CONFIG_HOME:-$HOME/.config}/opencode/skills`.
 
+## What multireview does
+
+`@multireview` is an adversarial code review coordinator. Invoking it spawns three specialist reviewers in parallel, each scoped to a single concern and blind to the others' findings:
+
+- **`multireview_correctness`** — logic soundness, edge cases, error handling, concurrency, performance, and OWASP-style security issues.
+- **`multireview_codestyle`** — naming, function design, comments, DRY violations, and file/code organisation.
+- **`multireview_testing`** — unit and integration test coverage for the changed code, plus test-quality anti-patterns (asserting on mocks, hardcoded sleeps, over-testing).
+
+Each specialist reviews only the given change scope (uncommitted changes, a branch diff, or a PR) and returns structured findings with a severity, exact code location, and justification — no fixes, no fluff, no praise.
+
+The coordinator then acts as final arbiter: it discards hallucinated, out-of-scope, or overly pedantic findings, merges duplicates across reviewers, and writes everything to `REVIEW_FINDINGS.md` in the repo root (git-excluded), split into `## Valid Findings` and `## Ignored Findings`. Every ignored finding carries a one-line `Wontfix:` justification so later runs don't re-flag it.
+
+From there, two optional skills turn findings into an interactive review pass using [Plannotator](https://github.com/plannotator/plannotator):
+
+- **`multireview-explainer`** renders the findings and a narrative PR summary as a static HTML page. Reviewers select text and leave native comments (including `wontfix`) directly on findings.
+- **`multireview-diff`** instead preloads findings as line comments in Plannotator's native git-diff UI, so reviewers work against the real file tree and diff rather than a rendered page.
+
+Both skills triage the human feedback back into `REVIEW_FINDINGS.md` — confirming, dismissing, or re-scoping findings — and hand the confirmed valid findings off to a fixer agent to implement.
+
 ## Install
 
 ```bash
