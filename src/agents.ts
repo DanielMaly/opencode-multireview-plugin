@@ -3,18 +3,20 @@ import { join } from "node:path"
 import { AGENT_NAMES, type MultireviewPluginConfig, type ReviewerKey } from "./defaults.js"
 import { agentsDirectory } from "./paths.js"
 
+type AgentMode = "primary" | "subagent" | "all"
+
 type AgentDefinition = {
   description: string
-  mode: "primary" | "subagent"
+  mode: AgentMode
   model: string
   prompt: string
   permission: Record<string, "allow" | "deny">
 }
 
-const AGENT_METADATA = {
+const AGENT_METADATA: Record<ReviewerKey, { description: string; mode: AgentMode; promptFile: string }> = {
   coordinator: {
     description: "Principal Engineer Coordinator for adversarial, multi-model code review.",
-    mode: "primary",
+    mode: "all",
     promptFile: "multireview.md",
   },
   codestyle: {
@@ -35,7 +37,7 @@ const AGENT_METADATA = {
     mode: "subagent",
     promptFile: "multireview_testing.md",
   },
-} as const satisfies Record<ReviewerKey, { description: string; mode: "primary" | "subagent"; promptFile: string }>
+} as const
 
 const COORDINATOR_PERMISSION = {
   read: "allow",

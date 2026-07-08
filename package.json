@@ -13,9 +13,9 @@
     }
   },
   "bin": {
-    "opencode-multireview-parse-findings": "./assets/scripts/parse-review-findings.mjs",
-    "opencode-multireview-build-explainer": "./assets/scripts/build-explainer.mjs",
-    "opencode-multireview-build-code-annotations": "./assets/scripts/build-code-annotations.mjs"
+    "opencode-multireview-parse-findings": "assets/scripts/parse-review-findings.mjs",
+    "opencode-multireview-build-explainer": "assets/scripts/build-explainer.mjs",
+    "opencode-multireview-build-code-annotations": "assets/scripts/build-code-annotations.mjs"
   },
   "files": [
     "dist/",

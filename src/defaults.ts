@@ -15,10 +15,10 @@ export type MultireviewPluginOptions = Partial<{
 
 export const DEFAULT_CONFIG: MultireviewPluginConfig = {
   models: {
-    coordinator: "github-copilot/claude-opus-4.6",
-    codestyle: "github-copilot/claude-sonnet-4.6",
-    correctness: "github-copilot/gpt-5.2",
-    testing: "github-copilot/gemini-3.1-pro-preview",
+    coordinator: "github-copilot/claude-opus-4.8",
+    codestyle: "github-copilot/claude-sonnet-5",
+    correctness: "github-copilot/gpt-5.4",
+    testing: "github-copilot/gemini-3.5-flash",
   },
   plannotator: {
     requirePlugin: true,

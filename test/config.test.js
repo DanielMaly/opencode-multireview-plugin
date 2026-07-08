@@ -8,8 +8,10 @@ import { loadMultireviewConfig } from "../dist/config.js";
 test("uses defaults when no config file exists", () => {
   const config = loadMultireviewConfig({ configPath: "/tmp/opencode-multireview-plugin-missing.json" });
 
-  assert.equal(config.models.coordinator, "github-copilot/claude-opus-4.6");
-  assert.equal(config.models.codestyle, "github-copilot/claude-sonnet-4.6");
+  assert.equal(config.models.coordinator, "github-copilot/claude-opus-4.8");
+  assert.equal(config.models.codestyle, "github-copilot/claude-sonnet-5");
+  assert.equal(config.models.correctness, "github-copilot/gpt-5.4");
+  assert.equal(config.models.testing, "github-copilot/gemini-3.5-flash");
   assert.equal(config.plannotator.requirePlugin, true);
 });
 
@@ -30,7 +32,7 @@ test("local config overrides defaults and tuple options override local config", 
 
     assert.equal(config.models.correctness, "local-correctness");
     assert.equal(config.models.testing, "option-testing");
-    assert.equal(config.models.coordinator, "github-copilot/claude-opus-4.6");
+    assert.equal(config.models.coordinator, "github-copilot/claude-opus-4.8");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

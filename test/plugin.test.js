@@ -24,7 +24,7 @@ test("registers agents without removing existing config", async () => {
   assert.equal(cfg.agent.existing_agent.model, "keep-me");
   assert.equal(cfg.agent.multireview.model, "user-model");
   assert.equal(cfg.agent.multireview.permission.bash, "allow");
-  assert.equal(cfg.agent.multireview_correctness.model, "github-copilot/gpt-5.2");
+  assert.equal(cfg.agent.multireview_correctness.model, "github-copilot/gpt-5.4");
 });
 
 test("can disable the Plannotator config check for development", async () => {
