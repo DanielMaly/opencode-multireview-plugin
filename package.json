@@ -46,7 +46,7 @@
   "author": "Daniel Maly",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/DanielMaly/opencode-multireview-plugin.git"
+    "url": "https://github.com/DanielMaly/opencode-multireview-plugin.git"
   },
   "homepage": "https://github.com/DanielMaly/opencode-multireview-plugin#readme",
   "bugs": {

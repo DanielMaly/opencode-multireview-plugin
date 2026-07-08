@@ -33,7 +33,7 @@ jobs:
 
       - run: npm test
 
-      - run: npm publish --access public
+      - run: npm publish --access public --provenance
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
