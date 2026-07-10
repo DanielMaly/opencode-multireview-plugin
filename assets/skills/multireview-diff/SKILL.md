@@ -47,7 +47,13 @@ This skill uses Plannotator's native diff-review mode: file tree, navigable file
    ```
    Poll until `ready.json` exists in `$SCRATCH`, then parse it for `port`.
 
-8. **Preload draft comments, then open** — Build a review-mode draft payload, POST it, then explicitly open the URL.
+8. **Post external annotations, verify, then open** — POST the code annotations as JSON to `POST /api/external-annotations` on the running Plannotator review server, for example `http://localhost:<port>/api/external-annotations`. The request body must be `{"annotations": [...]}`, where each annotation object is one of the entries emitted by `opencode-multireview-build-code-annotations` in step 6, including its required `source` field. Do not manually patch the generated annotation objects.
+
+   Do **not** use `/api/draft`. That endpoint is for the reviewer's own persisted draft state across reloads and is not consumed by the diff-review UI's comment feed.
+
+   The diff-review UI subscribes to `/api/external-annotations` via SSE at `/api/external-annotations/stream`, plus a polling fallback with a `since=<version>` cursor. A successful POST returns `201 Created` with a list of assigned annotation `ids`. Before opening the browser, verify with `GET /api/external-annotations` that `version` incremented and the annotations are present.
+
+   Only open the review URL after the POST succeeds and the verification GET reflects the annotations.
 
 9. **Read the submitted review result** — Wait for the backgrounded `plannotator review` process to exit, then read the last non-empty line of `review.log` and attempt `JSON.parse`. Defensively look for `feedback` as a string and `annotations` as an array. If parsing fails or those fields are absent, treat it like an abandoned session: do not touch `REVIEW_FINDINGS.md`, and report the raw log tail to the user for debugging rather than guessing.
 
