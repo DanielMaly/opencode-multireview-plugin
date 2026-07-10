@@ -1,6 +1,6 @@
 {
   "name": "opencode-multireview-plugin",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "OpenCode plugin bundling multireview agents and Plannotator review skills.",
   "type": "module",
   "main": "dist/index.js",

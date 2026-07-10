@@ -1,5 +1,10 @@
 # Changelog
 
+## [v0.2.0](https://github.com/DanielMaly/opencode-multireview-plugin/compare/v0.1.1...v0.2.0) (2026-07-08)
+
+- Slot multireview findings into the PR explainer's file tour [`69d5078`](https://github.com/DanielMaly/opencode-multireview-plugin/commit/69d5078f37884d21d70b9a1dd498a98d2436cdc2)
+- Release v0.2.0 [`6b1572c`](https://github.com/DanielMaly/opencode-multireview-plugin/commit/6b1572cacf34f5d360c37ace05ef8419b85bed31)
+
 ## [v0.1.1](https://github.com/DanielMaly/opencode-multireview-plugin/compare/v0.1.0...v0.1.1) (2026-07-08)
 
 - Add CI and automated release workflow [`e3e0cb5`](https://github.com/DanielMaly/opencode-multireview-plugin/commit/e3e0cb5b504ae8e2bb06d2bfd629ea4b2dcdded1)
