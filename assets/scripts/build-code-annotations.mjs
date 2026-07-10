@@ -80,16 +80,26 @@ function extractCandidateLines(body) {
     }
     if (!inFence || !trimmed) continue;
     if (trimmed.startsWith("//") || trimmed.startsWith("#")) continue;
-    candidates.push(trimmed);
+
+    const candidate = trimmed.replace(/^\d+:\s*/, "").trim();
+    if (!candidate || candidate === "...") continue;
+    if (candidate.length < 8) continue;
+    if (/^[^\p{L}\p{N}_]+$/u.test(candidate)) continue;
+
+    candidates.push(candidate);
   }
 
-  return candidates;
+  return [...new Set(candidates)].sort((a, b) => b.length - a.length);
 }
 
 function explanation(body) {
   const lines = String(body ?? "").split(/\r?\n/);
-  const problemIndex = lines.findIndex((line) => /^\*\*The Problem:\*\*\s*$/i.test(line.trim()));
-  const selected = problemIndex === -1 ? lines : lines.slice(problemIndex + 1);
+  const problemIndex = lines.findIndex((line) => /^\*\*The Problem\*\*(?::\s*(.*))?$/i.test(line.trim()));
+  if (problemIndex === -1) return lines.join("\n").trim();
+
+  const problemMatch = /^\*\*The Problem\*\*(?::\s*(.*))?$/i.exec(lines[problemIndex].trim());
+  const inlineText = problemMatch?.[1]?.trim();
+  const selected = inlineText ? [inlineText, ...lines.slice(problemIndex + 1)] : lines.slice(problemIndex + 1);
   return selected.join("\n").trim();
 }
 
@@ -151,6 +161,7 @@ export function buildAnnotation(finding, file, line) {
   return {
     id: randomId(),
     type: "comment",
+    source: "multireview",
     scope: "line",
     filePath: file.path,
     lineStart: line,
