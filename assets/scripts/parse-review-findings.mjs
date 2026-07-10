@@ -5,15 +5,15 @@
  *
  * REVIEW_FINDINGS.md contract (see ai-catalyst pkg/agents/shared/multireview*.md):
  *   ## Valid Findings
- *   **[SEVERITY] Title**
+ *   **[SEVERITY] [CATEGORY] Title**
  *   ...verbatim body (Location & Proof, The Problem, etc)...
  *
  *   ## Ignored Findings
- *   **[SEVERITY] Title**
+ *   **[SEVERITY] [CATEGORY] Title**
  *   ...verbatim body...
  *   **Wontfix: <reason>**
  *
- * Findings are split on a `**[SEVERITY] Title**` heading line. Everything
+ * Findings are split on a `**[SEVERITY] [CATEGORY] Title**` heading line. Everything
  * between one such heading and the next (or the next `##` section, or EOF)
  * belongs to that finding. A trailing `**Wontfix: ...**` line (Ignored
  * Findings only) is extracted separately and stripped from the body.
@@ -26,8 +26,9 @@
 import { readFileSync } from "node:fs";
 
 const SEVERITIES = ["CRITICAL", "HIGH", "MEDIUM", "LOW"];
+const CATEGORIES = ["CORRECTNESS", "CODESTYLE", "TESTING", "GENERAL"];
 const HEADING_RE = new RegExp(
-  `^\\*\\*\\[(${SEVERITIES.join("|")})\\]\\s*(.+?)\\*\\*\\s*$`
+  `^\\*\\*\\[(${SEVERITIES.join("|")})\\](?:\\s+\\[(${CATEGORIES.join("|")})\\])?\\s*(.+?)\\*\\*\\s*$`
 );
 const WONTFIX_RE = /^\*\*Wontfix:\s*(.+?)\*\*\s*$/i;
 
@@ -71,7 +72,13 @@ function splitFindings(lines) {
     const heading = HEADING_RE.exec(line.trim());
     if (heading) {
       flush();
-      current = { severity: heading[1], title: heading[2].trim(), body: [], wontfix: null };
+      current = {
+        severity: heading[1],
+        category: heading[2] ?? "GENERAL",
+        title: heading[3].trim(),
+        body: [],
+        wontfix: null,
+      };
       continue;
     }
     if (current) current.body.push(line);
@@ -97,8 +104,10 @@ function extractWontfix(finding) {
 }
 
 function findingRaw(finding) {
-  const heading = `**[${finding.severity}] ${finding.title}**`;
-  return [heading, "", ...finding.body].join("\n").trim();
+  const category = finding.category && finding.category !== "GENERAL" ? ` [${finding.category}]` : "";
+  const heading = `**[${finding.severity}]${category} ${finding.title}**`;
+  const body = Array.isArray(finding.body) ? finding.body : String(finding.body ?? "").split(/\r?\n/);
+  return [heading, "", ...body].join("\n").trim();
 }
 
 export function parseReviewFindings(markdown) {
@@ -106,6 +115,7 @@ export function parseReviewFindings(markdown) {
   const valid = splitFindings(sections.valid).map((f, i) => ({
     id: `MULTIREVIEW-${i + 1}`,
     severity: f.severity,
+    category: f.category,
     title: f.title,
     body: f.body.join("\n").trim(),
     raw: findingRaw(f),
@@ -114,6 +124,7 @@ export function parseReviewFindings(markdown) {
     .map(extractWontfix)
     .map((f) => ({
       severity: f.severity,
+      category: f.category,
       title: f.title,
       body: f.body.join("\n").trim(),
       wontfix: f.wontfix,
@@ -125,13 +136,13 @@ export function parseReviewFindings(markdown) {
 
 export function serializeReviewFindings({ valid, ignored }) {
   const validBlock = valid.length
-    ? valid.map((f) => f.raw).join("\n\n")
+    ? valid.map((f) => f.raw ?? findingRaw(f)).join("\n\n")
     : "_No valid findings._";
   const ignoredBlock = ignored.length
     ? ignored
         .map((f) => {
           const wontfixLine = f.wontfix ? `\n\n**Wontfix: ${f.wontfix}**` : "";
-          return `${f.raw}${wontfixLine}`;
+          return `${f.raw ?? findingRaw(f)}${wontfixLine}`;
         })
         .join("\n\n")
     : "_No ignored findings._";

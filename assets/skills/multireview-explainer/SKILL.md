@@ -30,7 +30,7 @@ The generated HTML intentionally reuses `plannotator-visual-explainer`'s design 
    git diff > "$SCRATCH"/diff.patch
    ```
 
-6. **Author the narrative manifest** — This is the LLM-judgment step. Read the actual diff and findings, then write `manifest.json` to `$SCRATCH`:
+6. **Author the narrative manifest** — This is the LLM-judgment step. Read the actual diff and findings, ground the reader in the current architecture before describing the diff/findings narrative, then write `manifest.json` to `$SCRATCH`:
    ```json
    {
      "repo": "string",
@@ -38,11 +38,13 @@ The generated HTML intentionally reuses `plannotator-visual-explainer`'s design 
      "prTitle": "string",
      "tldr": "2-3 sentences",
      "why": { "before": "string", "after": "string" },
+      "architecture": { "summary": "string", "diagramHtml": "optional inline SVG, sanitized to an SVG-only element allowlist" },
      "fileNotes": { "path/to/file.ts": "why this file changed" },
      "focusItems": [{ "file": "path", "note": "what to check" }],
      "testPlan": [{ "text": "string", "done": false }]
    }
    ```
+   `architecture.diagramHtml` may contain optional inline SVG only; the builder strips non-allowlisted SVG elements and unsafe event/protocol attributes before rendering it.
 
 7. **Build the explainer** — Generate the static HTML:
    ```bash
@@ -52,7 +54,7 @@ The generated HTML intentionally reuses `plannotator-visual-explainer`'s design 
      --manifest "$SCRATCH"/manifest.json \
      --out "$SCRATCH"/explainer.html
    ```
-   The generated page follows the parent PR explainer structure: each changed file renders its Pierre diff inline, then attaches matched multireview findings as review bubbles under that diff. Ignored findings carried from a prior `REVIEW_FINDINGS.md` appear as dimmed, struck-through bubbles with their `wontfix` reason. Findings that cannot be matched to a changed file render in a conditional **General findings** section after the file tour.
+   The generated page follows the parent PR explainer structure: a stat-card summary strip and expandable file tree orient the reviewer, each changed file renders its Pierre diff inline, and matched multireview findings attach as review bubbles with snippet-anchored code context under that diff. Ignored findings carried from a prior `REVIEW_FINDINGS.md` appear as dimmed, struck-through bubbles with their `wontfix` reason. Findings that cannot be matched to a changed file render in a conditional **General findings** section after the file tour, and a collapsed category-grouped **Implementor detail** section below the divider gives fixer-ready blocks.
 
 8. **Launch Plannotator** — Start annotate mode, wait for it to be ready, then open the browser yourself. There is no draft payload to preload and no `/api/draft` POST; the reviewer can select text in the rendered finding bubbles or narrative and add native Plannotator comments directly:
    ```bash

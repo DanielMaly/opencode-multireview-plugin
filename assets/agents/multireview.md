@@ -26,6 +26,10 @@ You must create or overwrite a file named `REVIEW_FINDINGS.md` in the root direc
 **Rule 1: Valid Findings**
 If a finding from either subagent is valid, relevant, and within scope, copy the finding VERBATIM (including its severity, title, location, proof, and explanation) into the "## Valid Findings" section. If multiple agents found the exact same issue, only list it once, but feel free to combine their proofs if it adds clarity. Related issues with the same root cause or the same likely fix should be merged into one.
 
+Each finding heading must include the source subagent category in this exact format:
+**[SEVERITY] [CATEGORY] Title**
+Use only `CORRECTNESS`, `CODESTYLE`, or `TESTING`. For merged findings from multiple subagents/categories, pick the category for the subagent finding that takes primacy in the merge, or default to the broadest-applicable single category. Do not invent multi-category tags and do not emit `GENERAL` yourself; untagged legacy findings are parser-side defaults only.
+
 **Rule 2: Ignored Findings**
 If a finding is hallucinated, factually incorrect, highly pedantic, or represents scope creep, copy the finding VERBATIM into the "## Ignored Findings" section.
 Crucially, you must append a new line to the bottom of the ignored finding formatted exactly like this:

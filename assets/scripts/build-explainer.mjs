@@ -110,23 +110,34 @@ function explanation(body) {
   return selected.join("\n").trim();
 }
 
-function matchFindingToFile(finding, files) {
+export function matchFindingToFile(finding, files) {
   const candidates = extractCandidateLines(finding.body);
 
   for (const needle of candidates) {
     for (const file of files) {
-      const line = findLineInPatch(file.patch, needle);
-      if (line !== undefined) return { file, line };
+      const match = findLineInPatch(file.patch, needle);
+      if (match !== undefined) return { file, line: match.line, snippet: match.snippet };
     }
   }
 
-  return { file: null, line: null };
+  return { file: null, line: null, snippet: null };
 }
 
-function findLineInPatch(patch, needle) {
+export function findLineInPatch(patch, needle) {
+  const parsed = parsePatchLines(patch);
+  const match = parsed.find(
+    (line) => line.newLine !== null && ["add", "context"].includes(line.kind) && line.text.includes(needle)
+  );
+
+  if (!match) return undefined;
+  return { line: match.newLine, snippet: windowAroundLine(parsed, match.newLine) };
+}
+
+function parsePatchLines(patch) {
   const lines = patch.split(/\r?\n/);
   let newLine = null;
   let inHunk = false;
+  const parsed = [];
 
   for (const line of lines) {
     const hunk = /^@@\s+-\d+(?:,\d+)?\s+\+(\d+)(?:,\d+)?\s+@@/.exec(line);
@@ -140,23 +151,35 @@ function findLineInPatch(patch, needle) {
 
     if (line.startsWith("+") && !line.startsWith("+++")) {
       const current = newLine;
-      if (line.slice(1).includes(needle)) return current;
+      parsed.push({ newLine: current, text: line.slice(1), kind: "add" });
       newLine++;
       continue;
     }
 
     if (line.startsWith(" ")) {
       const current = newLine;
-      if (line.slice(1).includes(needle)) return current;
+      parsed.push({ newLine: current, text: line.slice(1), kind: "context" });
       newLine++;
       continue;
     }
 
-    if (line.startsWith("-") && !line.startsWith("---")) continue;
+    if (line.startsWith("-") && !line.startsWith("---")) {
+      parsed.push({ newLine: null, text: line.slice(1), kind: "del" });
+      continue;
+    }
     if (line.startsWith("\\")) continue;
   }
 
-  return undefined;
+  return parsed;
+}
+
+function windowAroundLine(lines, matchedLine) {
+  const matchedIndex = lines.findIndex((line) => line.newLine === matchedLine);
+  if (matchedIndex === -1) return [];
+  return lines
+    .filter((line) => line.newLine !== null)
+    .filter((line) => Math.abs(line.newLine - matchedLine) <= 5)
+    .map((line) => ({ ...line, matched: line.newLine === matchedLine }));
 }
 
 function riskForSeverity(severity) {
@@ -176,32 +199,178 @@ function higherRisk(current, next) {
   return rank[next] > rank[current] ? next : current;
 }
 
-function paragraphs(text) {
-  return String(text ?? "")
-    .split(/\n{2,}/)
-    .map((part) => part.trim())
-    .filter(Boolean)
-    .map((part) => html(part).replace(/\n/g, "<br>"))
-    .join("<br><br>");
+function inlineMarkdown(text) {
+  const code = [];
+  const escaped = html(text).replaceAll("\u0000", "").replace(/`([^`]+)`/g, (_, value) => {
+    code.push(`<code>${value}</code>`);
+    return `\u0000CODE${code.length - 1}\u0000`;
+  });
+  return escaped
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/\u0000CODE(\d+)\u0000/g, (match, index) => code[Number(index)] ?? match);
 }
 
-function renderFinding(item, { dismissed = false, includeLocation = true } = {}) {
+function renderMarkdownBlock(block) {
+  const trimmed = block.trim();
+  if (!trimmed) return "";
+
+  const lines = trimmed.split(/\r?\n/);
+  const firstBullet = lines.findIndex((line) => /^-\s+/.test(line.trim()));
+  if (firstBullet !== -1) {
+    const leading = lines.slice(0, firstBullet).join("\n").trim();
+    const listItems = lines
+      .slice(firstBullet)
+      .filter((line) => /^-\s+/.test(line.trim()))
+      .map((line) => `<li>${inlineMarkdown(line.trim().replace(/^-\s+/, ""))}</li>`)
+      .join("");
+    const paragraph = leading ? `${inlineMarkdown(leading).replace(/\n/g, "<br>")}<br>` : "";
+    return `${paragraph}<ul>${listItems}</ul>`;
+  }
+
+  return inlineMarkdown(trimmed).replace(/\n/g, "<br>");
+}
+
+export function paragraphs(text) {
+  const lines = String(text ?? "").split(/\r?\n/);
+  const blocks = [];
+  let buffer = [];
+  let fence = null;
+  let code = [];
+
+  const flushBuffer = () => {
+    const rendered = renderMarkdownBlock(buffer.join("\n"));
+    if (rendered) blocks.push(rendered);
+    buffer = [];
+  };
+
+  for (const line of lines) {
+    const fenceStart = /^```(.*)$/.exec(line.trim());
+    if (fenceStart) {
+      if (fence !== null) {
+        const label = fence ? `<span class="code-label">${html(fence)}</span>` : "";
+        blocks.push(`<div class="code-panel">${label}<pre><code>${html(code.join("\n"))}</code></pre></div>`);
+        fence = null;
+        code = [];
+      } else {
+        flushBuffer();
+        fence = fenceStart[1].trim();
+      }
+      continue;
+    }
+
+    if (fence !== null) {
+      code.push(line);
+      continue;
+    }
+
+    if (line.trim() === "") {
+      flushBuffer();
+      continue;
+    }
+    buffer.push(line);
+  }
+
+  if (fence !== null) {
+    const label = fence ? `<span class="code-label">${html(fence)}</span>` : "";
+    blocks.push(`<div class="code-panel">${label}<pre><code>${html(code.join("\n"))}</code></pre></div>`);
+  }
+  flushBuffer();
+
+  return blocks.join("<br><br>");
+}
+
+export function extractPatchSnippet(diffText, location) {
+  const files = parseDiff(diffText);
+  const file = files.find((candidate) => candidate.path === location.file) ?? files[0];
+  if (!file || !location.line) return "";
+  return renderSnippet(windowAroundLine(parsePatchLines(file.patch), location.line));
+}
+
+function renderSnippet(snippet) {
+  if (!Array.isArray(snippet) || snippet.length === 0) return "";
+  const lines = snippet
+    .map((line) => {
+      const classes = [line.kind === "add" ? "add" : line.kind === "del" ? "del" : "line-context"];
+      if (line.matched) classes.push("line-matched");
+      const number = line.newLine === null ? "-" : String(line.newLine).padStart(4, " ");
+      return `<span class="${classes.join(" ")}">${html(`${number} ${line.text}`)}</span>`;
+    })
+    .join("\n");
+  return `<div class="code-panel snippet"><pre><code>${lines}</code></pre></div>`;
+}
+
+export function sanitizeDiagramHtml(input) {
+  const allowedElements = new Set([
+    "svg",
+    "g",
+    "rect",
+    "circle",
+    "ellipse",
+    "line",
+    "path",
+    "polygon",
+    "polyline",
+    "text",
+    "tspan",
+    "defs",
+    "marker",
+    "title",
+    "desc",
+  ]);
+
+  const decodeEntities = (value) =>
+    value.replace(/&(?:#(\d+)|#x([\da-f]+)|colon|Tab|NewLine);?/gi, (match, decimal, hex) => {
+      if (decimal) return String.fromCodePoint(Number(decimal));
+      if (hex) return String.fromCodePoint(Number.parseInt(hex, 16));
+      if (/colon/i.test(match)) return ":";
+      return "";
+    });
+
+  return String(input ?? "")
+    .replace(/<(script|foreignObject|style|set|animate|animateTransform|use)\b[\s\S]*?<\/\1>/gi, "")
+    .replace(/<([a-z][\w:-]*)\b[^>]*>[\s\S]*?<\/\1>/gi, (element, name) =>
+      allowedElements.has(name.toLowerCase()) ? element : ""
+    )
+    .replace(/<\/?([a-z][\w:-]*)\b[^>]*>/gi, (tag, name) => {
+      if (!allowedElements.has(name.toLowerCase())) return "";
+      return tag
+        .replace(/([\s/]+)on[a-z]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, "$1")
+        .replace(/([\s/]+)(?:href|xlink:href)\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, (match, prefix, value) => {
+          const unquoted = value.replace(/^(["'])([\s\S]*)\1$/, "$2");
+          const normalized = decodeEntities(unquoted).replace(/[\u0000-\u0020]+/g, "").toLowerCase();
+          return /^(?:javascript|data):/.test(normalized) ? prefix : match;
+        });
+    });
+}
+
+export function groupFindingsByCategory(findings) {
+  const groups = { CORRECTNESS: [], CODESTYLE: [], TESTING: [], GENERAL: [] };
+  for (const finding of findings) {
+    const category = Object.hasOwn(groups, finding.category) ? finding.category : "GENERAL";
+    groups[category].push(finding);
+  }
+  return groups;
+}
+
+export function renderFinding(item, { dismissed = false, includeLocation = true } = {}) {
   const location = item.locationHref
     ? `<a class="anchor" href="#${item.locationHref}">${html(item.locationLabel)}</a>`
     : `<span class="anchor">${html(item.locationLabel)}</span>`;
   const wontfix = item.wontfix ? `<p><strong>Wontfix:</strong> ${paragraphs(item.wontfix)}</p>` : "";
   const locationMarkup = includeLocation ? `<span class="anchor">${location}</span>` : "";
+  const snippet = item.snippet ? renderSnippet(item.snippet) : "";
 
   return `<div class="bubble ${bubbleClass(item.severity)}${dismissed ? " dismissed" : ""}">
     <span class="anchor">${html(item.tag)}</span>
     <span class="severity">${html(item.severity)}</span>
     ${locationMarkup}
-    <p><strong class="bubble-title">${html(item.title)}</strong>${item.explanation ? ` — ${paragraphs(item.explanation)}` : ""}</p>
+    ${snippet}
+    <div class="finding-explanation"><strong class="bubble-title">${html(item.title)}</strong>${item.explanation ? ` — ${paragraphs(item.explanation)}` : ""}</div>
     ${wontfix}
   </div>`;
 }
 
-function renderDiffBlock(file) {
+export function renderDiffBlock(file) {
   const patchId = `${file.id}-patch`;
   const patchJson = JSON.stringify(file.patch).replaceAll("</", "<\\/");
 
@@ -211,7 +380,7 @@ function renderDiffBlock(file) {
   </div>`;
 }
 
-function renderComments(validFindings, ignoredFindings, options = {}) {
+export function renderComments(validFindings, ignoredFindings, options = {}) {
   const bubbles = [
     ...validFindings.map((finding) => renderFinding(finding, options)),
     ...ignoredFindings.map((finding) => renderFinding(finding, { ...options, dismissed: true })),
@@ -220,14 +389,14 @@ function renderComments(validFindings, ignoredFindings, options = {}) {
   return bubbles.length ? `<div class="comments">${bubbles.join("\n")}</div>` : "";
 }
 
-function renderFindingList(validFindings, ignoredFindings, options = {}) {
+export function renderFindingList(validFindings, ignoredFindings, options = {}) {
   return [
     ...validFindings.map((finding) => renderFinding(finding, options)),
     ...ignoredFindings.map((finding) => renderFinding(finding, { ...options, dismissed: true })),
   ].join("\n");
 }
 
-function renderFile(file, manifest) {
+export function renderFile(file, manifest) {
   const why = manifest.fileNotes?.[file.path];
   const badgeClass = file.badge.toLowerCase();
   const head = `<div class="file-head">
@@ -261,7 +430,7 @@ function renderFile(file, manifest) {
 </div>`;
 }
 
-function renderGeneralFindings(number, validFindings, ignoredFindings) {
+export function renderGeneralFindings(number, validFindings, ignoredFindings) {
   if (validFindings.length === 0 && ignoredFindings.length === 0) return "";
 
   return `<section>
@@ -272,7 +441,7 @@ function renderGeneralFindings(number, validFindings, ignoredFindings) {
 </section>`;
 }
 
-function renderFocusItems(number, items) {
+export function renderFocusItems(number, items) {
   if (!Array.isArray(items) || items.length === 0) return "";
   return `<section>
   <div class="section-header"><span class="section-number">${number}</span><h2>Where to focus</h2></div>
@@ -289,7 +458,7 @@ function renderFocusItems(number, items) {
 </section>`;
 }
 
-function renderTestPlan(number, items) {
+export function renderTestPlan(number, items) {
   if (!Array.isArray(items) || items.length === 0) return "";
   return `<section>
   <div class="section-header"><span class="section-number">${number}</span><h2>Test plan</h2></div>
@@ -303,12 +472,104 @@ function renderTestPlan(number, items) {
 </section>`;
 }
 
-function renderTldr(tldr) {
+export function renderArchitecture(number, architecture) {
+  if (!architecture) return "";
+  const diagram = architecture.diagramHtml
+    ? `<div class="diagram-panel">${sanitizeDiagramHtml(architecture.diagramHtml)}</div>`
+    : "";
+
+  return `<section>
+  <div class="section-header"><span class="section-number">${number}</span><h2>Where this sits today</h2></div>
+  <div class="architecture-summary">${paragraphs(architecture.summary ?? "")}</div>
+  ${diagram}
+</section>`;
+}
+
+function fileTreeClass(badge) {
+  if (badge === "NEW") return "file-new";
+  if (badge === "DEL") return "file-del";
+  return "file-mod";
+}
+
+export function renderFileTree(number, files, manifest) {
+  if (files.length === 0) return "";
+
+  return `<section>
+  <div class="section-header"><span class="section-number">${number}</span><h2>File map</h2></div>
+  <div class="legend"><span class="new">New</span><span class="mod">Modified</span><span class="del">Deleted</span></div>
+  <div class="filetree">
+    ${files
+      .map((file) => {
+        const note = manifest.fileNotes?.[file.path];
+        return `<details class="filetree-row">
+      <summary><span class="${fileTreeClass(file.badge)}">${html(file.path)}</span> <span class="file-badge ${file.badge.toLowerCase()}">${file.badge}</span></summary>
+      <div class="details-body">
+        <p><span class="risk-tag ${file.risk}">${file.risk}</span></p>
+        ${note ? `<div class="note">${paragraphs(note)}</div>` : ""}
+        <p><a href="#${file.id}">Jump to file tour</a></p>
+      </div>
+    </details>`;
+      })
+      .join("\n")}
+  </div>
+</section>`;
+}
+
+export function renderSummaryStrip({ files, totalAdditions, totalDeletions, validCount, ignoredCount }) {
+  const highRiskFiles = files.filter((file) => file.risk === "attention").length;
+  return `<div class="summary-strip">
+    <div class="stat-card"><span class="stat-value">${files.length}</span><span class="stat-label">Files</span></div>
+    <div class="stat-card"><span class="stat-value"><span class="additions">+${totalAdditions}</span> / <span class="deletions">-${totalDeletions}</span></span><span class="stat-label">Lines</span></div>
+    <div class="stat-card"><span class="stat-value">${validCount}</span><span class="stat-label">Valid findings</span></div>
+    <div class="stat-card"><span class="stat-value">${ignoredCount}</span><span class="stat-label">Ignored findings</span></div>
+    <div class="stat-card"><span class="stat-value">${highRiskFiles}</span><span class="stat-label">High-risk files</span></div>
+  </div>`;
+}
+
+function renderImplementorFinding(finding) {
+  const snippet = finding.snippet ? renderSnippet(finding.snippet) : "";
+  return `<div class="impl-finding">
+    <h4>${html(finding.tag ?? finding.id ?? "finding")} · ${html(finding.filePath ?? finding.locationLabel ?? "general")} · ${html(finding.severity ?? "")}</h4>
+    <p><strong>${html(finding.title ?? "Untitled finding")}</strong></p>
+    ${snippet}
+    <div class="impl-note">${paragraphs(finding.explanation ?? finding.body ?? "")}</div>
+  </div>`;
+}
+
+export function renderImplementorDetail(validFindings) {
+  const groups = groupFindingsByCategory(validFindings);
+  const labels = {
+    CORRECTNESS: "Correctness",
+    CODESTYLE: "Codestyle",
+    TESTING: "Testing",
+    GENERAL: "General",
+  };
+
+  return `<hr class="divider">
+
+<section>
+  <div class="section-header"><span class="section-number">→</span><h2>Implementor detail</h2></div>
+  <p class="section-sub">Confirmed multireview findings grouped for fixer handoff. Collapsed by default.</p>
+  ${Object.entries(labels)
+    .map(([category, label]) => {
+      const findings = groups[category];
+      return `<details>
+    <summary>${label} (${findings.length})</summary>
+    <div class="details-body">
+      ${findings.length ? findings.map(renderImplementorFinding).join("\n") : `<p class="empty-state">No ${label.toLowerCase()} findings.</p>`}
+    </div>
+  </details>`;
+    })
+    .join("\n")}
+</section>`;
+}
+
+export function renderTldr(tldr) {
   if (!tldr) return "";
   return `<div class="tldr"><h3>TL;DR</h3><p>${paragraphs(tldr)}</p></div>`;
 }
 
-function renderWhy(number, why) {
+export function renderWhy(number, why) {
   if (!why?.before && !why?.after) return "";
   return `<section>
       <div class="section-header"><span class="section-number">${number}</span><h2>Why</h2></div>
@@ -319,19 +580,24 @@ function renderWhy(number, why) {
     </section>`;
 }
 
-function renderHtml({ manifest, files, unmatchedValidFindings, unmatchedIgnoredFindings }) {
+export function renderHtml({ manifest, files, unmatchedValidFindings, unmatchedIgnoredFindings }) {
   const totalAdditions = files.reduce((sum, file) => sum + file.additions, 0);
   const totalDeletions = files.reduce((sum, file) => sum + file.deletions, 0);
+  const validFindings = [...files.flatMap((file) => file.validFindings ?? []), ...unmatchedValidFindings];
+  const ignoredFindings = [...files.flatMap((file) => file.ignoredFindings ?? []), ...unmatchedIgnoredFindings];
   const sections = {};
   let nextSection = 1;
+  if (manifest.architecture) {
+    sections.architecture = String(nextSection++).padStart(2, "0");
+  }
   if (manifest.why?.before || manifest.why?.after) {
     sections.why = String(nextSection++).padStart(2, "0");
   }
+  sections.fileTree = String(nextSection++).padStart(2, "0");
   sections.files = String(nextSection++).padStart(2, "0");
   if (unmatchedValidFindings.length || unmatchedIgnoredFindings.length) {
     sections.general = String(nextSection++).padStart(2, "0");
   }
-  sections.risk = String(nextSection++).padStart(2, "0");
   sections.focus = String(nextSection++).padStart(2, "0");
   sections.test = String(nextSection++).padStart(2, "0");
 
@@ -461,39 +727,47 @@ details {
   border: 1.5px solid var(--border);
   border-radius: var(--radius);
   margin: 16px 0;
+  background: var(--card);
 }
 
 summary {
   font-family: var(--font-sans);
-  font-weight: 500;
-  padding: 16px 24px;
+  font-weight: 600;
+  padding: 14px 22px;
   cursor: pointer;
   list-style: none;
+  font-size: 0.92rem;
 }
 
 summary::before {
   content: '▸';
   display: inline-block;
-  margin-right: 8px;
-  transition: transform 0.2s;
+  margin-right: 10px;
+  transition: transform 0.15s;
+  color: var(--primary);
 }
 
 details[open] summary::before { transform: rotate(90deg); }
 
-.details-body { padding: 0 24px 24px; }
+.details-body { padding: 0 22px 20px; }
 
-.pr-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 16px;
-  font-family: var(--font-mono);
-  font-size: 0.78rem;
-  color: var(--muted-foreground);
-  margin-top: 8px;
-}
+.details-body h4 { font-family: var(--font-mono); font-size: 0.82rem; color: var(--primary); margin: 18px 0 6px; }
+.details-body h4:first-child { margin-top: 4px; }
+.details-body p { font-size: 0.87rem; color: var(--muted-foreground); margin-bottom: 8px; }
 
-.pr-meta .additions { color: var(--success); }
-.pr-meta .deletions { color: var(--destructive); }
+.summary-strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 16px; margin: 32px 0; }
+.stat-card { border: 1.5px solid var(--border); border-radius: var(--radius); padding: 16px 20px; text-align: center; background: var(--card); }
+.stat-value { font-family: var(--font-display); font-size: 1.7rem; font-weight: 500; display: block; }
+.stat-label { font-family: var(--font-mono); font-size: 0.66rem; font-weight: 500; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted-foreground); margin-top: 4px; display: block; }
+
+.summary-strip .additions { color: var(--success); }
+.summary-strip .deletions { color: var(--destructive); }
+
+.section-sub { font-size: 0.85rem; color: var(--muted-foreground); margin-top: -8px; margin-bottom: 20px; max-width: 68ch; }
+
+.diagram-panel { border: 1.5px solid var(--border); border-radius: var(--radius); padding: 24px; margin: 20px 0; background: var(--card); overflow-x: auto; }
+
+.architecture-summary { max-width: 760px; }
 
 .tldr {
   background: var(--card);
@@ -618,12 +892,24 @@ details[open] summary::before { transform: rotate(90deg); }
 .bubble.nit .severity { color: var(--muted-foreground); }
 .bubble.suggestion .severity { color: var(--success); }
 
-.bubble p {
+.bubble p,
+.bubble .finding-explanation {
   margin-top: 6px;
   font-size: 0.88rem;
   line-height: 1.55;
   color: var(--foreground);
 }
+
+.code-panel { background: var(--code-bg); border-radius: var(--radius); padding: 18px; overflow-x: auto; margin: 14px 0; border: 1.5px solid var(--border); }
+.code-label { font-family: var(--font-mono); font-size: 0.7rem; color: var(--muted-foreground); display: block; margin-bottom: 10px; }
+.code-panel pre { margin: 0; font-family: var(--font-mono); font-size: 0.83rem; line-height: 1.6; color: var(--foreground); white-space: pre-wrap; }
+.code-panel code { font-family: var(--font-mono); background: transparent; padding: 0; border-radius: 0; }
+.code-panel .del { color: var(--destructive); text-decoration: line-through; opacity: 0.7; }
+.code-panel .add { color: var(--success); font-weight: 600; }
+.code-panel .line-context { color: var(--muted-foreground); }
+.code-panel .line-matched { display: block; color: var(--foreground); background: color-mix(in oklab, var(--primary) 12%, transparent); font-weight: 700; }
+
+.bubble .code-panel { margin: 10px 0; padding: 12px; }
 
 .diff-block {
   background: var(--background);
@@ -645,54 +931,18 @@ diffs-container {
   border-radius: 3px;
 }
 
-.risk-map {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin: 24px 0;
-}
-
-.chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  font-family: var(--font-mono);
-  font-size: 0.75rem;
-  padding: 6px 12px;
-  border: 1.5px solid var(--border);
-  border-radius: 20px;
-  text-decoration: none;
-  color: var(--foreground);
-  transition: box-shadow 0.15s;
-}
-
-.chip:hover {
-  box-shadow: 0 0 0 2px color-mix(in oklab, var(--primary) 25%, transparent);
-}
-
-.chip .dot {
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-}
-
-.chip.attention {
-  background: color-mix(in oklab, var(--destructive) 8%, transparent);
-  border-color: color-mix(in oklab, var(--destructive) 40%, transparent);
-}
-.chip.attention .dot { background: var(--destructive); }
-
-.chip.medium {
-  background: color-mix(in oklab, var(--warning) 10%, transparent);
-  border-color: color-mix(in oklab, var(--warning) 30%, transparent);
-}
-.chip.medium .dot { background: var(--warning); }
-
-.chip.safe {
-  background: color-mix(in oklab, var(--success) 8%, transparent);
-  border-color: color-mix(in oklab, var(--success) 35%, transparent);
-}
-.chip.safe .dot { background: var(--success); }
+.filetree { font-family: var(--font-mono); font-size: 0.85rem; line-height: 1.9; border: 1.5px solid var(--border); border-radius: var(--radius); background: var(--card); padding: 20px 24px; }
+.filetree .file-mod { color: var(--warning); font-weight: 600; }
+.filetree .file-new { color: var(--success); font-weight: 600; }
+.filetree .file-del { color: var(--destructive); text-decoration: line-through; }
+.filetree .note { color: var(--muted-foreground); font-style: italic; font-size: 0.78rem; }
+.filetree-row { margin: 8px 0; }
+.filetree-row summary { padding: 10px 14px; }
+.legend { display: flex; gap: 20px; flex-wrap: wrap; margin: 14px 0 4px; font-family: var(--font-mono); font-size: 0.72rem; }
+.legend span::before { content: '■ '; }
+.legend .new { color: var(--success); }
+.legend .mod { color: var(--warning); }
+.legend .del { color: var(--destructive); }
 
 .file-card {
   border: 1.5px solid var(--border);
@@ -954,6 +1204,12 @@ diffs-container {
   background: color-mix(in oklab, var(--success) 12%, transparent);
   color: var(--success);
 }
+
+hr.divider { border: none; border-top: 2px dashed var(--border); margin: 72px 0 48px; }
+.impl-note { background: var(--muted); border-radius: var(--radius); padding: 10px 16px; font-size: 0.82rem; margin: 10px 0; }
+.impl-note b { color: var(--destructive); }
+.impl-finding { border-bottom: 1px solid var(--border); padding: 4px 0 14px; }
+.impl-finding:last-child { border-bottom: none; }
   </style>
 </head>
 <body>
@@ -961,17 +1217,17 @@ diffs-container {
     <header>
       <span class="eyebrow">Pull request · ${html(manifest.repo || "repository")}</span>
       <h1>${html(manifest.prTitle || "PR explainer")}</h1>
-      <div class="pr-meta">
-        <span>${files.length} files</span>
-        <span class="additions">+${totalAdditions}</span>
-        <span class="deletions">-${totalDeletions}</span>
-        <span>${html(manifest.branch || "branch")}</span>
-      </div>
     </header>
+
+    ${renderSummaryStrip({ files, totalAdditions, totalDeletions, validCount: validFindings.length, ignoredCount: ignoredFindings.length })}
+
+    ${renderArchitecture(sections.architecture, manifest.architecture)}
 
     ${renderTldr(manifest.tldr)}
 
     ${renderWhy(sections.why, manifest.why)}
+
+    ${renderFileTree(sections.fileTree, files, manifest)}
 
     <section>
       <div class="section-header"><span class="section-number">${sections.files}</span><h2>File tour</h2></div>
@@ -980,15 +1236,9 @@ diffs-container {
 
     ${renderGeneralFindings(sections.general, unmatchedValidFindings, unmatchedIgnoredFindings)}
 
-    <section>
-      <div class="section-header"><span class="section-number">${sections.risk}</span><h2>Risk map</h2></div>
-      <div class="risk-map">
-        ${files.map((file) => `<a href="#${file.id}" class="chip ${file.risk}"><span class="dot"></span>${html(file.path)}</a>`).join("\n")}
-      </div>
-    </section>
-
     ${renderFocusItems(sections.focus, manifest.focusItems)}
     ${renderTestPlan(sections.test, manifest.testPlan)}
+    ${renderImplementorDetail(validFindings)}
   </div>
 </body>
 </html>
@@ -1010,13 +1260,15 @@ function main() {
   }
 
   for (const finding of findings.valid) {
-    const { file, line } = matchFindingToFile(finding, files);
+    const { file, line, snippet } = matchFindingToFile(finding, files);
     const explanationText = explanation(finding.body);
     const locationLabel = file ? `${file.path}${line ? `:${line}` : ""}` : "general";
     const renderedFinding = {
       ...finding,
       tag: `[${finding.id}]`,
       explanation: explanationText,
+      snippet,
+      filePath: file?.path ?? null,
       locationLabel,
       locationHref: file?.id ?? null,
     };
@@ -1030,12 +1282,14 @@ function main() {
   }
 
   findings.ignored.forEach((finding, index) => {
-    const { file, line } = matchFindingToFile(finding, files);
+    const { file, line, snippet } = matchFindingToFile(finding, files);
     const locationLabel = file ? `${file.path}${line ? `:${line}` : ""}` : "general";
     const renderedFinding = {
       ...finding,
       tag: `[IGNORED-${index + 1}]`,
       explanation: explanation(finding.body),
+      snippet,
+      filePath: file?.path ?? null,
       locationLabel,
       locationHref: file?.id ?? null,
     };
@@ -1060,4 +1314,6 @@ function main() {
   );
 }
 
-main();
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main();
+}
