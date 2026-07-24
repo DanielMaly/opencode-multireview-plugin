@@ -104,6 +104,12 @@ test("coordinator prompt preserves the sharp general review workflow", async () 
   assert.match(prompt, /Correctness, security, code style, testing, and intent are peer review domains/);
   assert.match(prompt, /do not frame general arbitration primarily through intent/);
   assert.match(prompt, /You may spawn dedicated explore subagents again after the initial specialists have returned/);
+  assert.match(prompt, /prevent duplicate output-token cost and latency from relaying a changeset/);
+  assert.match(prompt, /must never fetch or materialize the full diff for the purpose of spawning specialists/);
+  assert.match(prompt, /must never paste, quote, serialize, summarize line-by-line, or otherwise relay diff contents in specialist task prompts/);
+  assert.match(prompt, /Specialist task prompts must contain only a compact high-level scope\/reference/);
+  assert.match(prompt, /Caller-supplied authoritative intent content or excerpts are explicitly allowed and must pass through/);
+  assert.match(prompt, /Each specialist retrieves and reads the changeset itself using its own tools/);
   assert.match(prompt, /Copy accepted valid findings verbatim/);
   assert.match(prompt, /Copy rejected findings verbatim into `Ignored Findings`/);
   assert.match(prompt, /append exactly one final line: `\*\*Wontfix:/);
