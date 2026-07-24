@@ -77,9 +77,36 @@ test("coordinator prompt preserves the intent routing contracts", async () => {
   const prompt = cfg.agent.multireview.prompt;
   assert.match(prompt, /If `intent` is absent, spawn the remaining roster without an intent-source preflight/);
   assert.match(prompt, /current-slice scope/);
-  assert.match(prompt, /Do not flag work explicitly assigned to a later plan slice/);
+  assert.match(prompt, /Do not flag work explicitly assigned to a later slice/);
   assert.match(prompt, /Never ask the user directly and never assume access to a question tool/);
-  assert.match(prompt, /Return a concise status and unresolved uncertainty IDs to the caller/);
+  assert.match(prompt, /Return a concise status plus unresolved uncertainty IDs to the caller/);
+});
+
+test("coordinator prompt preserves the sharp general review workflow", async () => {
+  const plugin = await MultireviewPlugin(
+    {},
+    {
+      configPath: "/nonexistent/multireview-plugin.json",
+      plannotator: { requirePlugin: false },
+    },
+  );
+  const cfg = { plugin: [], agent: {} };
+
+  await plugin.config(cfg);
+
+  const prompt = cfg.agent.multireview.prompt;
+  assert.match(prompt, /### Step 1: Select and spawn/);
+  assert.match(prompt, /STRICTLY FORBIDDEN from fetching the entire diff[\s\S]*before completing this step/);
+  assert.match(prompt, /Immediately spawn all specialists in the final effective roster concurrently/);
+  assert.match(prompt, /### Step 2: Collect and arbitrate/);
+  assert.match(prompt, /without bias/);
+  assert.match(prompt, /validity, relevance, scope creep, current-slice scope, proof quality, and severity based on consequence\/impact/);
+  assert.match(prompt, /Correctness, security, code style, testing, and intent are peer review domains/);
+  assert.match(prompt, /do not frame general arbitration primarily through intent/);
+  assert.match(prompt, /You may spawn dedicated explore subagents again after the initial specialists have returned/);
+  assert.match(prompt, /Copy accepted valid findings verbatim/);
+  assert.match(prompt, /Copy rejected findings verbatim into `Ignored Findings`/);
+  assert.match(prompt, /append exactly one final line: `\*\*Wontfix:/);
 });
 
 test("an empty configured roster still registers every specialist", async () => {
