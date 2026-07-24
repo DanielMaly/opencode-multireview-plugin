@@ -25,6 +25,8 @@ test("registers agents without removing existing config", async () => {
   assert.equal(cfg.agent.multireview.model, "user-model");
   assert.equal(cfg.agent.multireview.permission.bash, "allow");
   assert.equal(cfg.agent.multireview_correctness.model, "github-copilot/gpt-5.4");
+  assert.equal(cfg.agent.multireview_intent.model, "github-copilot/claude-opus-4.8");
+  assert.match(cfg.agent.multireview.prompt, /codestyle, correctness, testing, intent/);
 });
 
 test("can disable the Plannotator config check for development", async () => {
@@ -37,4 +39,63 @@ test("can disable the Plannotator config check for development", async () => {
   await plugin.config(cfg);
 
   assert.ok(cfg.agent.multireview_testing);
+});
+
+test("registers omitted specialists and embeds the configured roster", async () => {
+  const plugin = await MultireviewPlugin(
+    {},
+    {
+      configPath: "/nonexistent/multireview-plugin.json",
+      enabled_agents: ["intent"],
+      plannotator: { requirePlugin: false },
+    },
+  );
+  const cfg = { plugin: [], agent: {} };
+
+  await plugin.config(cfg);
+
+  assert.ok(cfg.agent.multireview_correctness);
+  assert.ok(cfg.agent.multireview_codestyle);
+  assert.ok(cfg.agent.multireview_testing);
+  assert.ok(cfg.agent.multireview_intent);
+  assert.match(cfg.agent.multireview.prompt, /intent/);
+  assert.doesNotMatch(cfg.agent.multireview.prompt, /codestyle, correctness, testing, intent/);
+});
+
+test("coordinator prompt preserves the intent routing contracts", async () => {
+  const plugin = await MultireviewPlugin(
+    {},
+    {
+      configPath: "/nonexistent/multireview-plugin.json",
+      plannotator: { requirePlugin: false },
+    },
+  );
+  const cfg = { plugin: [], agent: {} };
+
+  await plugin.config(cfg);
+
+  const prompt = cfg.agent.multireview.prompt;
+  assert.match(prompt, /If `intent` is absent, spawn the remaining roster without an intent-source preflight/);
+  assert.match(prompt, /current-slice scope/);
+  assert.match(prompt, /Do not flag work explicitly assigned to a later plan slice/);
+  assert.match(prompt, /Never ask the user directly and never assume access to a question tool/);
+  assert.match(prompt, /Return a concise status and unresolved uncertainty IDs to the caller/);
+});
+
+test("an empty configured roster still registers every specialist", async () => {
+  const plugin = await MultireviewPlugin(
+    {},
+    {
+      configPath: "/nonexistent/multireview-plugin.json",
+      enabled_agents: [],
+      plannotator: { requirePlugin: false },
+    },
+  );
+  const cfg = { plugin: [], agent: {} };
+
+  await plugin.config(cfg);
+
+  assert.ok(cfg.agent.multireview_correctness);
+  assert.ok(cfg.agent.multireview_intent);
+  assert.match(cfg.agent.multireview.prompt, /\(none\)/);
 });

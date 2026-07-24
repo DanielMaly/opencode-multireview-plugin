@@ -3,8 +3,10 @@
     "coordinator": "github-copilot/claude-opus-4.8",
     "codestyle": "github-copilot/claude-sonnet-5",
     "correctness": "github-copilot/gpt-5.4",
-    "testing": "github-copilot/gemini-3.5-flash"
+    "testing": "github-copilot/gemini-3.5-flash",
+    "intent": "github-copilot/claude-opus-4.8"
   },
+  "enabled_agents": ["codestyle", "correctness", "testing", "intent"],
   "plannotator": {
     "requirePlugin": true
   }
