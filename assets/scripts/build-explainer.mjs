@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { readFileSync, writeFileSync } from "node:fs";
+import { blockedIntentIds } from "./parse-review-findings.mjs";
 
 function usage() {
   console.error(
@@ -344,7 +345,7 @@ export function sanitizeDiagramHtml(input) {
 }
 
 export function groupFindingsByCategory(findings) {
-  const groups = { CORRECTNESS: [], CODESTYLE: [], TESTING: [], GENERAL: [] };
+  const groups = { CORRECTNESS: [], CODESTYLE: [], TESTING: [], INTENT: [], GENERAL: [] };
   for (const finding of findings) {
     const category = Object.hasOwn(groups, finding.category) ? finding.category : "GENERAL";
     groups[category].push(finding);
@@ -353,6 +354,7 @@ export function groupFindingsByCategory(findings) {
 }
 
 export function renderFinding(item, { dismissed = false, includeLocation = true } = {}) {
+  const blocked = blockedIntentIds(item).length > 0;
   const location = item.locationHref
     ? `<a class="anchor" href="#${item.locationHref}">${html(item.locationLabel)}</a>`
     : `<span class="anchor">${html(item.locationLabel)}</span>`;
@@ -360,9 +362,10 @@ export function renderFinding(item, { dismissed = false, includeLocation = true 
   const locationMarkup = includeLocation ? `<span class="anchor">${location}</span>` : "";
   const snippet = item.snippet ? renderSnippet(item.snippet) : "";
 
-  return `<div class="bubble ${bubbleClass(item.severity)}${dismissed ? " dismissed" : ""}">
+  return `<div class="bubble ${bubbleClass(item.severity)}${dismissed ? " dismissed" : ""}${blocked ? " blocked" : ""}">
     <span class="anchor">${html(item.tag)}</span>
     <span class="severity">${html(item.severity)}</span>
+    ${blocked ? `<span class="blocked-label">Blocked by intent</span>` : ""}
     ${locationMarkup}
     ${snippet}
     <div class="finding-explanation"><strong class="bubble-title">${html(item.title)}</strong>${item.explanation ? ` — ${paragraphs(item.explanation)}` : ""}</div>
@@ -515,13 +518,14 @@ export function renderFileTree(number, files, manifest) {
 </section>`;
 }
 
-export function renderSummaryStrip({ files, totalAdditions, totalDeletions, validCount, ignoredCount }) {
+export function renderSummaryStrip({ files, totalAdditions, totalDeletions, validCount, ignoredCount, uncertaintyCount = 0 }) {
   const highRiskFiles = files.filter((file) => file.risk === "attention").length;
   return `<div class="summary-strip">
     <div class="stat-card"><span class="stat-value">${files.length}</span><span class="stat-label">Files</span></div>
     <div class="stat-card"><span class="stat-value"><span class="additions">+${totalAdditions}</span> / <span class="deletions">-${totalDeletions}</span></span><span class="stat-label">Lines</span></div>
     <div class="stat-card"><span class="stat-value">${validCount}</span><span class="stat-label">Valid findings</span></div>
     <div class="stat-card"><span class="stat-value">${ignoredCount}</span><span class="stat-label">Ignored findings</span></div>
+    <div class="stat-card"><span class="stat-value">${uncertaintyCount}</span><span class="stat-label">Intent uncertainties</span></div>
     <div class="stat-card"><span class="stat-value">${highRiskFiles}</span><span class="stat-label">High-risk files</span></div>
   </div>`;
 }
@@ -542,6 +546,7 @@ export function renderImplementorDetail(validFindings) {
     CORRECTNESS: "Correctness",
     CODESTYLE: "Codestyle",
     TESTING: "Testing",
+    INTENT: "Intent",
     GENERAL: "General",
   };
 
@@ -564,6 +569,28 @@ export function renderImplementorDetail(validFindings) {
 </section>`;
 }
 
+export function renderIntentUncertainties(number, uncertainties) {
+  if (!Array.isArray(uncertainties) || uncertainties.length === 0) return "";
+
+  return `<section class="intent-uncertainties">
+  <div class="section-header"><span class="section-number">${number}</span><h2>Intent uncertainties</h2></div>
+  <div class="uncertainty-list">
+    ${uncertainties
+      .map(
+        (uncertainty) => `<details class="uncertainty">
+      <summary>${html(uncertainty.id)} · ${html(uncertainty.title)}</summary>
+      <div class="details-body">
+        <h4>Observed evidence</h4><p>${paragraphs(uncertainty.observedEvidence)}</p>
+        <h4>Missing or conflicting context</h4><p>${paragraphs(uncertainty.missingOrConflictingContext)}</p>
+        <h4>Clarification question</h4><p>${paragraphs(uncertainty.clarificationQuestion)}</p>
+      </div>
+    </details>`
+      )
+      .join("\n")}
+  </div>
+</section>`;
+}
+
 export function renderTldr(tldr) {
   if (!tldr) return "";
   return `<div class="tldr"><h3>TL;DR</h3><p>${paragraphs(tldr)}</p></div>`;
@@ -580,7 +607,7 @@ export function renderWhy(number, why) {
     </section>`;
 }
 
-export function renderHtml({ manifest, files, unmatchedValidFindings, unmatchedIgnoredFindings }) {
+export function renderHtml({ manifest, files, unmatchedValidFindings, unmatchedIgnoredFindings, uncertainties = [] }) {
   const totalAdditions = files.reduce((sum, file) => sum + file.additions, 0);
   const totalDeletions = files.reduce((sum, file) => sum + file.deletions, 0);
   const validFindings = [...files.flatMap((file) => file.validFindings ?? []), ...unmatchedValidFindings];
@@ -597,6 +624,9 @@ export function renderHtml({ manifest, files, unmatchedValidFindings, unmatchedI
   sections.files = String(nextSection++).padStart(2, "0");
   if (unmatchedValidFindings.length || unmatchedIgnoredFindings.length) {
     sections.general = String(nextSection++).padStart(2, "0");
+  }
+  if (uncertainties.length) {
+    sections.uncertainties = String(nextSection++).padStart(2, "0");
   }
   sections.focus = String(nextSection++).padStart(2, "0");
   sections.test = String(nextSection++).padStart(2, "0");
@@ -840,6 +870,8 @@ details[open] summary::before { transform: rotate(90deg); }
 .bubble.blocking { border-left-color: var(--primary); }
 .bubble.nit { border-left-color: var(--border); }
 .bubble.suggestion { border-left-color: var(--success); }
+.bubble.blocked { border-left-color: var(--warning); }
+.blocked-label { font-family: var(--font-mono); font-size: 0.65rem; font-weight: 700; color: var(--warning); margin-left: 8px; text-transform: uppercase; }
 
 .bubble.dismissed {
   border-left-color: var(--muted-foreground);
@@ -1219,7 +1251,7 @@ hr.divider { border: none; border-top: 2px dashed var(--border); margin: 72px 0 
       <h1>${html(manifest.prTitle || "PR explainer")}</h1>
     </header>
 
-    ${renderSummaryStrip({ files, totalAdditions, totalDeletions, validCount: validFindings.length, ignoredCount: ignoredFindings.length })}
+    ${renderSummaryStrip({ files, totalAdditions, totalDeletions, validCount: validFindings.length, ignoredCount: ignoredFindings.length, uncertaintyCount: uncertainties.length })}
 
     ${renderArchitecture(sections.architecture, manifest.architecture)}
 
@@ -1235,6 +1267,8 @@ hr.divider { border: none; border-top: 2px dashed var(--border); margin: 72px 0 
     </section>
 
     ${renderGeneralFindings(sections.general, unmatchedValidFindings, unmatchedIgnoredFindings)}
+
+    ${renderIntentUncertainties(sections.uncertainties, uncertainties)}
 
     ${renderFocusItems(sections.focus, manifest.focusItems)}
     ${renderTestPlan(sections.test, manifest.testPlan)}
@@ -1253,6 +1287,7 @@ function main() {
   const files = parseDiff(diffText);
   const unmatchedValidFindings = [];
   const unmatchedIgnoredFindings = [];
+  const uncertainties = Array.isArray(findings.uncertainties) ? findings.uncertainties : [];
 
   for (const file of files) {
     file.validFindings = [];
@@ -1303,7 +1338,7 @@ function main() {
 
   writeFileSync(
     args.out,
-    renderHtml({ manifest, files, unmatchedValidFindings, unmatchedIgnoredFindings }),
+    renderHtml({ manifest, files, unmatchedValidFindings, unmatchedIgnoredFindings, uncertainties }),
     "utf8"
   );
 

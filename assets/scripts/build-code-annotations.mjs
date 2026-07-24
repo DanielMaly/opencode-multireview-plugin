@@ -199,7 +199,7 @@ function main() {
   writeFileSync(args.out, JSON.stringify(annotations, null, 2) + "\n", "utf8");
 
   console.error(
-    `${files.length} files, ${annotations.length}/${findings.valid.length} valid findings placed (${unmatched.length} unmatched), ${findings.ignored.length} ignored`
+    `${files.length} files, ${annotations.length}/${findings.valid.length} valid findings placed (${unmatched.length} unmatched), ${findings.ignored.length} ignored, ${(findings.uncertainties ?? []).length} uncertainties`
   );
   process.stdout.write(JSON.stringify(unmatched, null, 2) + "\n");
 }
