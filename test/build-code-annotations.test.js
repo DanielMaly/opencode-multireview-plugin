@@ -27,6 +27,7 @@ missing();
 \`\`\``,
       },
     ],
+    uncertainties: [{ id: "MULTIREVIEW-UNCERTAINTY-1" }],
     ignored: [],
   };
   const diff = `diff --git a/src/parser.ts b/src/parser.ts
@@ -49,6 +50,50 @@ missing();
   assert.doesNotMatch(result.annotations[0].text, /Location & Proof/);
   assert.doesNotMatch(result.annotations[0].text, /return parse\(value\);/);
   assert.deepEqual(result.unmatched, [{ id: "MULTIREVIEW-2", severity: "LOW", title: "No match" }]);
+});
+
+test("annotates blocked valid findings but never annotates uncertainties", () => {
+  const findings = {
+    valid: [
+      {
+        id: "MULTIREVIEW-5",
+        severity: "HIGH",
+        title: "Blocked but reviewable",
+        body: `**Location & Proof:**
+
+\`\`\`ts
+return parse(value);
+\`\`\`
+
+**Blocked by intent:** MULTIREVIEW-UNCERTAINTY-1`,
+      },
+    ],
+    uncertainties: [
+      {
+        id: "MULTIREVIEW-UNCERTAINTY-1",
+        title: "Unclear rule",
+        observedEvidence: "Observed.",
+        missingOrConflictingContext: "Missing.",
+        clarificationQuestion: "Which rule?",
+      },
+    ],
+    ignored: [],
+  };
+  const diff = `diff --git a/src/parser.ts b/src/parser.ts
+--- a/src/parser.ts
++++ b/src/parser.ts
+@@ -8,3 +8,4 @@ export function run(value) {
+ const before = true;
++return parse(value);
+ }
+`;
+
+  const result = buildCodeAnnotations(findings, diff);
+
+  assert.equal(result.annotations.length, 1);
+  assert.match(result.annotations[0].text, /Blocked by intent/);
+  assert.doesNotMatch(result.annotations[0].text, /Which rule\?/);
+  assert.equal(result.unmatched.length, 0);
 });
 
 test("matches line-number-prefixed proof lines to the correct diff line", () => {

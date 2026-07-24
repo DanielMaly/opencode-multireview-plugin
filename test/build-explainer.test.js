@@ -4,6 +4,7 @@ import {
   extractPatchSnippet,
   groupFindingsByCategory,
   paragraphs,
+  renderHtml,
   sanitizeDiagramHtml,
 } from "../assets/scripts/build-explainer.mjs";
 
@@ -66,11 +67,12 @@ test("snippet extraction contract: returns exactly ±5 lines and marks matched l
   assert.doesNotMatch(snippetHtml, /<[^>]+class="[^"]*\bline-matched\b[^"]*"[^>]*>[^<]*line (?:1|2|3|4|5|7|8|9|10|11)[^<]*<\/[^>]+>/);
 });
 
-test("category bucketing contract: routes findings into four implementor-detail buckets", () => {
+test("category bucketing contract: routes findings into five implementor-detail buckets", () => {
   const findings = [
     { category: "CORRECTNESS", title: "Correctness" },
     { category: "CODESTYLE", title: "Style" },
     { category: "TESTING", title: "Testing" },
+    { category: "INTENT", title: "Intent" },
     { title: "Legacy" },
   ];
 
@@ -78,8 +80,44 @@ test("category bucketing contract: routes findings into four implementor-detail 
     CORRECTNESS: [findings[0]],
     CODESTYLE: [findings[1]],
     TESTING: [findings[2]],
-    GENERAL: [findings[3]],
+    INTENT: [findings[3]],
+    GENERAL: [findings[4]],
   });
+});
+
+test("explainer keeps blocked findings visible and renders uncertainties separately", () => {
+  const html = renderHtml({
+    manifest: { prTitle: "Intent review", repo: "example" },
+    files: [],
+    unmatchedValidFindings: [
+      {
+        id: "MULTIREVIEW-1",
+        tag: "[MULTIREVIEW-1]",
+        severity: "HIGH",
+        title: "Blocked behavior",
+        body: "Problem.\n\n**Blocked by intent:** MULTIREVIEW-UNCERTAINTY-1",
+        explanation: "Problem.\n\n**Blocked by intent:** MULTIREVIEW-UNCERTAINTY-1",
+        locationLabel: "general",
+      },
+    ],
+    unmatchedIgnoredFindings: [],
+    uncertainties: [
+      {
+        id: "MULTIREVIEW-UNCERTAINTY-1",
+        title: "Rule is unclear",
+        observedEvidence: "Observed.",
+        missingOrConflictingContext: "Missing context.",
+        clarificationQuestion: "Which rule applies?",
+      },
+    ],
+  });
+
+  assert.match(html, /<div class="bubble blocking blocked">/);
+  assert.match(html, /<span class="blocked-label">Blocked by intent<\/span>/);
+  assert.match(html, /Intent uncertainties/);
+  assert.match(html, /Observed evidence/);
+  assert.match(html, /Which rule applies\?/);
+  assert.match(html, /Intent review/);
 });
 
 test("sanitizeDiagramHtml contract: strips active SVG/HTML attack surface", () => {
