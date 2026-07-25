@@ -13,7 +13,7 @@ The generated HTML intentionally reuses `plannotator-visual-explainer`'s design 
 
 1. **Resolve scope** — Use the same target scope `@multireview` would use: uncommitted changes, branch diff, or PR reference. Ask the user if the intended scope is ambiguous.
 
-2. **Get findings** — If `REVIEW_FINDINGS.md` does not exist yet, or is stale for the current scope, run `@multireview` fresh. Follow the plan-executor convention: provide no additional context beyond the changeset, and do not reuse previous multireview sessions.
+2. **Get findings** — If `REVIEW_FINDINGS.md` does not exist yet, or is stale for the current scope, run `@multireview` fresh. Pass explicit plan content/reference and any phase/PR-slice identifier through the existing scope; never auto-discover a local plan. Surface the returned `complete`, `partial`, or `blocked` status and unresolved uncertainty IDs to the caller.
 
 3. **Create a scratch directory** — Create a fresh scratch directory for this run and keep its path in `$SCRATCH` for the rest of the workflow. Do not write scratch files into the repository:
    ```bash
@@ -22,8 +22,9 @@ The generated HTML intentionally reuses `plannotator-visual-explainer`'s design 
 
 4. **Parse findings** — Parse the findings into scratch JSON:
    ```bash
-   opencode-multireview-parse-findings parse REVIEW_FINDINGS.md > "$SCRATCH"/findings.json
-   ```
+    opencode-multireview-parse-findings parse REVIEW_FINDINGS.md > "$SCRATCH"/findings.json
+    ```
+    Parse and render all valid findings and intent uncertainties. Blocked findings remain visible in the explainer; uncertainties are structured content only and never become line annotations.
 
 5. **Get the diff** — Write the relevant unified diff to scratch, using `git diff` or the appropriate ref range for the resolved scope:
    ```bash
@@ -75,11 +76,15 @@ The generated HTML intentionally reuses `plannotator-visual-explainer`'s design 
    - Scan the free-text `feedback` field as a fallback for direct `MULTIREVIEW-<n>` tag mentions. Tag mentioned with surrounding `wontfix` text → move that finding to Ignored Findings using the same reason extraction. Tag mentioned without `wontfix` → keep it Valid and pass the feedback through as extra fixer context.
    - Feedback or annotations with no attributable `MULTIREVIEW-<n>` finding → treat as fresh ad-hoc reviewer feedback. Hand it to `@fixer` alongside confirmed findings; do not file it into `REVIEW_FINDINGS.md`.
 
-11. **Rewrite `REVIEW_FINDINGS.md`** — Serialize the updated valid/ignored arrays:
+11. **Rewrite `REVIEW_FINDINGS.md`** — Serialize the updated valid, uncertainty, and ignored arrays:
     ```bash
     opencode-multireview-parse-findings serialize "$SCRATCH"/updated-findings.json > REVIEW_FINDINGS.md
     ```
 
-12. **Hand off** — Pass the confirmed Valid Findings plus any attributed reviewer comments and ad-hoc feedback to `@fixer` to implement, matching plan-executor's existing review-loop step. If invoked from within `plan-executor`'s review loop, respect its existing three-round cap; otherwise run a standalone loop with the same shape.
+12. **Hand off** — Before handing off, partition the parsed report and pass only actionable valid findings to `@fixer`:
+    ```bash
+    opencode-multireview-parse-findings partition-actionable "$SCRATCH"/findings.json > "$SCRATCH"/actionable.json
+    ```
+    Pass only `.actionable` plus attributed reviewer comments and ad-hoc feedback. Never pass `.blocked`, ignored findings, or uncertainties. Independent findings may complete triage while blocked findings wait.
 
-13. **Report to the user** — Summarize what was dismissed and why, what is being fixed, and where the generated HTML explainer was saved. Mention that the HTML can be reopened any time because it is a static file.
+13. **Clarification and report** — Surface each uncertainty question and ID when the invoking agent can interact. Do not rerun until the caller supplies answers/evidence; then invoke an intent-only clarification rerun with the mapping in the existing scope and regenerate the report/explainer. If invoked by another agent without that capability, return the partial/blocked status and IDs. Never use annotation deletion or `Wontfix` to resolve uncertainty. Summarize what was dismissed and why, what actionable work is being fixed, and where the static HTML explainer was saved.

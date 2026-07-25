@@ -25,6 +25,8 @@ test("registers agents without removing existing config", async () => {
   assert.equal(cfg.agent.multireview.model, "user-model");
   assert.equal(cfg.agent.multireview.permission.bash, "allow");
   assert.equal(cfg.agent.multireview_correctness.model, "github-copilot/gpt-5.4");
+  assert.equal(cfg.agent.multireview_intent.model, "github-copilot/claude-opus-4.8");
+  assert.match(cfg.agent.multireview.prompt, /codestyle, correctness, testing, intent/);
 });
 
 test("can disable the Plannotator config check for development", async () => {
@@ -37,4 +39,96 @@ test("can disable the Plannotator config check for development", async () => {
   await plugin.config(cfg);
 
   assert.ok(cfg.agent.multireview_testing);
+});
+
+test("registers omitted specialists and embeds the configured roster", async () => {
+  const plugin = await MultireviewPlugin(
+    {},
+    {
+      configPath: "/nonexistent/multireview-plugin.json",
+      enabled_agents: ["intent"],
+      plannotator: { requirePlugin: false },
+    },
+  );
+  const cfg = { plugin: [], agent: {} };
+
+  await plugin.config(cfg);
+
+  assert.ok(cfg.agent.multireview_correctness);
+  assert.ok(cfg.agent.multireview_codestyle);
+  assert.ok(cfg.agent.multireview_testing);
+  assert.ok(cfg.agent.multireview_intent);
+  assert.match(cfg.agent.multireview.prompt, /intent/);
+  assert.doesNotMatch(cfg.agent.multireview.prompt, /codestyle, correctness, testing, intent/);
+});
+
+test("coordinator prompt preserves the intent routing contracts", async () => {
+  const plugin = await MultireviewPlugin(
+    {},
+    {
+      configPath: "/nonexistent/multireview-plugin.json",
+      plannotator: { requirePlugin: false },
+    },
+  );
+  const cfg = { plugin: [], agent: {} };
+
+  await plugin.config(cfg);
+
+  const prompt = cfg.agent.multireview.prompt;
+  assert.match(prompt, /If `intent` is absent, spawn the remaining roster without an intent-source preflight/);
+  assert.match(prompt, /current-slice scope/);
+  assert.match(prompt, /Do not flag work explicitly assigned to a later slice/);
+  assert.match(prompt, /Never ask the user directly and never assume access to a question tool/);
+  assert.match(prompt, /Return a concise status plus unresolved uncertainty IDs to the caller/);
+});
+
+test("coordinator prompt preserves the sharp general review workflow", async () => {
+  const plugin = await MultireviewPlugin(
+    {},
+    {
+      configPath: "/nonexistent/multireview-plugin.json",
+      plannotator: { requirePlugin: false },
+    },
+  );
+  const cfg = { plugin: [], agent: {} };
+
+  await plugin.config(cfg);
+
+  const prompt = cfg.agent.multireview.prompt;
+  assert.match(prompt, /### Step 1: Select and spawn/);
+  assert.match(prompt, /STRICTLY FORBIDDEN from fetching the entire diff[\s\S]*before completing this step/);
+  assert.match(prompt, /Immediately spawn all specialists in the final effective roster concurrently/);
+  assert.match(prompt, /### Step 2: Collect and arbitrate/);
+  assert.match(prompt, /without bias/);
+  assert.match(prompt, /validity, relevance, scope creep, current-slice scope, proof quality, and severity based on consequence\/impact/);
+  assert.match(prompt, /Correctness, security, code style, testing, and intent are peer review domains/);
+  assert.match(prompt, /do not frame general arbitration primarily through intent/);
+  assert.match(prompt, /You may spawn dedicated explore subagents again after the initial specialists have returned/);
+  assert.match(prompt, /prevent duplicate output-token cost and latency from relaying a changeset/);
+  assert.match(prompt, /must never fetch or materialize the full diff for the purpose of spawning specialists/);
+  assert.match(prompt, /must never paste, quote, serialize, summarize line-by-line, or otherwise relay diff contents in specialist task prompts/);
+  assert.match(prompt, /Specialist task prompts must contain only a compact high-level scope\/reference/);
+  assert.match(prompt, /Caller-supplied authoritative intent content or excerpts are explicitly allowed and must pass through/);
+  assert.match(prompt, /Each specialist retrieves and reads the changeset itself using its own tools/);
+  assert.match(prompt, /Copy accepted valid findings verbatim/);
+  assert.match(prompt, /Copy rejected findings verbatim into `Ignored Findings`/);
+  assert.match(prompt, /append exactly one final line: `\*\*Wontfix:/);
+});
+
+test("an empty configured roster still registers every specialist", async () => {
+  const plugin = await MultireviewPlugin(
+    {},
+    {
+      configPath: "/nonexistent/multireview-plugin.json",
+      enabled_agents: [],
+      plannotator: { requirePlugin: false },
+    },
+  );
+  const cfg = { plugin: [], agent: {} };
+
+  await plugin.config(cfg);
+
+  assert.ok(cfg.agent.multireview_correctness);
+  assert.ok(cfg.agent.multireview_intent);
+  assert.match(cfg.agent.multireview.prompt, /\(none\)/);
 });

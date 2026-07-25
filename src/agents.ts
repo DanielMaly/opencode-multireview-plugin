@@ -37,6 +37,12 @@ const AGENT_METADATA: Record<ReviewerKey, { description: string; mode: AgentMode
     mode: "subagent",
     promptFile: "multireview_testing.md",
   },
+  intent: {
+    description:
+      "Senior Engineer focused exclusively on whether the changes match authoritative plans, specifications, tickets, and recorded decisions, distinguishing confirmed intent drift from unresolved evidence.",
+    mode: "subagent",
+    promptFile: "multireview_intent.md",
+  },
 } as const
 
 const COORDINATOR_PERMISSION = {
@@ -59,7 +65,10 @@ export function buildAgents(config: MultireviewPluginConfig): Record<string, Age
     (Object.keys(AGENT_NAMES) as ReviewerKey[]).map((key) => {
       const metadata = AGENT_METADATA[key]
       const permission = key === "coordinator" ? COORDINATOR_PERMISSION : REVIEWER_PERMISSION
-      const prompt = readFileSync(join(agentsDirectory, metadata.promptFile), "utf8")
+      const prompt = readFileSync(join(agentsDirectory, metadata.promptFile), "utf8").replace(
+        "{{CONFIGURED_SPECIALIST_ROSTER}}",
+        config.enabled_agents.join(", ") || "(none)",
+      )
 
       return [
         AGENT_NAMES[key],
