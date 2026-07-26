@@ -1,5 +1,11 @@
 # Changelog
 
+## [v0.3.0](https://github.com/DanielMaly/opencode-multireview-plugin/compare/v0.2.0...v0.3.0) (2026-07-10)
+
+- Add richer, reviewable output to multireview-explainer [`#3`](https://github.com/DanielMaly/opencode-multireview-plugin/pull/3)
+- Fix code annotation matching [`#2`](https://github.com/DanielMaly/opencode-multireview-plugin/pull/2)
+- Release v0.3.0 [`3630124`](https://github.com/DanielMaly/opencode-multireview-plugin/commit/36301246515f2a55ac2c4338cb06469c532f1ee8)
+
 ## [v0.2.0](https://github.com/DanielMaly/opencode-multireview-plugin/compare/v0.1.1...v0.2.0) (2026-07-08)
 
 - Slot multireview findings into the PR explainer's file tour [`69d5078`](https://github.com/DanielMaly/opencode-multireview-plugin/commit/69d5078f37884d21d70b9a1dd498a98d2436cdc2)
