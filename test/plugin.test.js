@@ -27,6 +27,37 @@ test("registers agents without removing existing config", async () => {
   assert.equal(cfg.agent.multireview_correctness.model, "github-copilot/gpt-5.4");
 });
 
+test("injects model and variant into an absent agent", async () => {
+  const dir = "/tmp/opencode-multireview-plugin-variant-test.json";
+  const plugin = await MultireviewPlugin({}, {
+    configPath: dir,
+    models: { correctness: { model: "review-model", variant: "thorough" } },
+    plannotator: { requirePlugin: false },
+  });
+  const cfg = { agent: {} };
+
+  await plugin.config(cfg);
+
+  assert.equal(cfg.agent.multireview_correctness.model, "review-model");
+  assert.equal(cfg.agent.multireview_correctness.variant, "thorough");
+});
+
+test("preserves explicit user agent model and variant", async () => {
+  const plugin = await MultireviewPlugin({}, {
+    configPath: "/tmp/opencode-multireview-plugin-user-agent-test.json",
+    models: { correctness: { model: "review-model", variant: "thorough" } },
+    plannotator: { requirePlugin: false },
+  });
+  const cfg = {
+    agent: { multireview_correctness: { model: "user-model", variant: "user-variant" } },
+  };
+
+  await plugin.config(cfg);
+
+  assert.equal(cfg.agent.multireview_correctness.model, "user-model");
+  assert.equal(cfg.agent.multireview_correctness.variant, "user-variant");
+});
+
 test("can disable the Plannotator config check for development", async () => {
   const plugin = await MultireviewPlugin(
     {},
