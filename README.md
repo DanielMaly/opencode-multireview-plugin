@@ -116,6 +116,40 @@ Create `~/.config/opencode/multireview-plugin.json` to override them locally:
 }
 ```
 
+Models can also include an OpenCode agent variant. Strings remain supported:
+
+```json
+{
+  "models": {
+    "correctness": {
+      "model": "github-copilot/gpt-5.4",
+      "variant": "high"
+    }
+  }
+}
+```
+
+Define reusable profiles in the same file and select one with `profile`:
+
+```json
+{
+  "profile": "fast",
+  "profiles": {
+    "fast": {
+      "coordinator": "github-copilot/claude-sonnet-5",
+      "testing": { "model": "github-copilot/gemini-3.5-flash", "variant": "fast" }
+    },
+    "thorough": {
+      "correctness": { "model": "github-copilot/gpt-5.4", "variant": "high" }
+    }
+  }
+}
+```
+
+`OPENCODE_MULTIREVIEW_PROFILE` selects a non-empty environment value before the file's `profile`; an empty value is ignored. Precedence is shipped defaults, selected profile, file `models`, then tuple `models`. Each reviewer override replaces both its model and variant, so a higher-level string also clears a lower-level variant. The reserved `default` profile means the shipped baseline and cannot be defined under `profiles`.
+
+An unknown selected profile warns and falls back to shipped defaults; file and tuple model overrides still apply. Invalid model/profile entries, including arrays, empty models or variants, unknown reviewers, and `profiles.default`, fail during config loading. Profile and model settings are read when the plugin loads, so restart OpenCode after changing them.
+
 Plugin tuple options override the local file:
 
 ```json
@@ -132,6 +166,8 @@ Plugin tuple options override the local file:
   ]
 }
 ```
+
+Tuple options are limited to `configPath`, `models`, and `plannotator`; profiles are file configuration only.
 
 ## CLI helpers
 

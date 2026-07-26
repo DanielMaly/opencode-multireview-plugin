@@ -9,6 +9,7 @@ type AgentDefinition = {
   description: string
   mode: AgentMode
   model: string
+  variant?: string
   prompt: string
   permission: Record<string, "allow" | "deny">
 }
@@ -66,7 +67,8 @@ export function buildAgents(config: MultireviewPluginConfig): Record<string, Age
         {
           description: metadata.description,
           mode: metadata.mode,
-          model: config.models[key],
+          model: config.models[key].model,
+          ...(config.models[key].variant === undefined ? {} : { variant: config.models[key].variant }),
           prompt,
           permission,
         },

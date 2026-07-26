@@ -1,7 +1,17 @@
 export type ReviewerKey = "coordinator" | "codestyle" | "correctness" | "testing"
 
+export type ModelSelectionInput = string | {
+  model: string
+  variant?: string
+}
+
+export type ModelSelection = {
+  model: string
+  variant?: string
+}
+
 export type MultireviewPluginConfig = {
-  models: Record<ReviewerKey, string>
+  models: Record<ReviewerKey, ModelSelection>
   plannotator: {
     requirePlugin: boolean
   }
@@ -9,16 +19,16 @@ export type MultireviewPluginConfig = {
 
 export type MultireviewPluginOptions = Partial<{
   configPath: string
-  models: Partial<Record<ReviewerKey, string>>
+  models: Partial<Record<ReviewerKey, ModelSelectionInput>>
   plannotator: Partial<{ requirePlugin: boolean }>
 }>
 
 export const DEFAULT_CONFIG: MultireviewPluginConfig = {
   models: {
-    coordinator: "github-copilot/claude-opus-4.8",
-    codestyle: "github-copilot/claude-sonnet-5",
-    correctness: "github-copilot/gpt-5.4",
-    testing: "github-copilot/gemini-3.5-flash",
+    coordinator: { model: "github-copilot/claude-opus-4.8" },
+    codestyle: { model: "github-copilot/claude-sonnet-5" },
+    correctness: { model: "github-copilot/gpt-5.4" },
+    testing: { model: "github-copilot/gemini-3.5-flash" },
   },
   plannotator: {
     requirePlugin: true,
