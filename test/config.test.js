@@ -12,7 +12,25 @@ test("uses defaults when no config file exists", () => {
   assert.deepEqual(config.models.codestyle, { model: "github-copilot/claude-sonnet-5" });
   assert.deepEqual(config.models.correctness, { model: "github-copilot/gpt-5.4" });
   assert.deepEqual(config.models.testing, { model: "github-copilot/gemini-3.5-flash" });
-  assert.equal(config.plannotator.requirePlugin, true);
+});
+
+test("ignores legacy unknown configuration keys", () => {
+  const dir = mkdtempSync(join(tmpdir(), "multireview-plugin-"));
+  const configPath = join(dir, "config.json");
+  writeFileSync(configPath, JSON.stringify({ plannotator: { requirePlugin: true } }), "utf8");
+
+  try {
+    assert.deepEqual(loadMultireviewConfig({ configPath }), {
+      models: {
+        coordinator: { model: "github-copilot/claude-opus-4.8" },
+        codestyle: { model: "github-copilot/claude-sonnet-5" },
+        correctness: { model: "github-copilot/gpt-5.4" },
+        testing: { model: "github-copilot/gemini-3.5-flash" },
+      },
+    });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("normalizes legacy string and object model overrides", () => {

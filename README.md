@@ -1,30 +1,16 @@
 # opencode-multireview-plugin
 
-Local-first, npm-ready OpenCode plugin that bundles the `multireview` agent set and two Plannotator-backed review skills:
-
-- `multireview-explainer`
-- `multireview-diff`
-
-The package injects the four agents directly through the OpenCode config hook. Bundled skills are installed by the package `postinstall` script, which copies them into `${XDG_CONFIG_HOME:-$HOME/.config}/opencode/skills`.
+Local-first, npm-ready OpenCode plugin bundling four adversarial multireview agents and a review-findings parser.
 
 ## What multireview does
 
-`@multireview` is an adversarial code review coordinator. Invoking it spawns three specialist reviewers in parallel, each scoped to a single concern and blind to the others' findings:
+`@multireview` is an adversarial code review coordinator. It spawns three specialist reviewers in parallel, each scoped to a single concern and blind to the others' findings:
 
 - **`multireview_correctness`** — logic soundness, edge cases, error handling, concurrency, performance, and OWASP-style security issues.
 - **`multireview_codestyle`** — naming, function design, comments, DRY violations, and file/code organisation.
-- **`multireview_testing`** — unit and integration test coverage for the changed code, plus test-quality anti-patterns (asserting on mocks, hardcoded sleeps, over-testing).
+- **`multireview_testing`** — unit and integration test coverage for changed code, plus test-quality anti-patterns.
 
-Each specialist reviews only the given change scope (uncommitted changes, a branch diff, or a PR) and returns structured findings with a severity, exact code location, and justification — no fixes, no fluff, no praise.
-
-The coordinator then acts as final arbiter: it discards hallucinated, out-of-scope, or overly pedantic findings, merges duplicates across reviewers, and writes everything to `REVIEW_FINDINGS.md` in the repo root (git-excluded), split into `## Valid Findings` and `## Ignored Findings`. Every ignored finding carries a one-line `Wontfix:` justification so later runs don't re-flag it.
-
-From there, two optional skills turn findings into an interactive review pass using [Plannotator](https://github.com/plannotator/plannotator):
-
-- **`multireview-explainer`** renders the findings and a narrative PR summary as a static HTML page. Reviewers select text and leave native comments (including `wontfix`) directly on findings.
-- **`multireview-diff`** instead preloads findings as line comments in Plannotator's native git-diff UI, so reviewers work against the real file tree and diff rather than a rendered page.
-
-Both skills triage the human feedback back into `REVIEW_FINDINGS.md` — confirming, dismissing, or re-scoping findings — and hand the confirmed valid findings off to a fixer agent to implement.
+The coordinator acts as final arbiter: it discards hallucinated, out-of-scope, or overly pedantic findings, merges duplicates, and writes the result to `REVIEW_FINDINGS.md` in the repository root. Findings are split into `## Valid Findings` and `## Ignored Findings`; every ignored finding carries a one-line `Wontfix:` justification.
 
 ## Install
 
@@ -33,22 +19,17 @@ cd ~/.config/opencode
 npm install opencode-multireview-plugin
 ```
 
-Then configure OpenCode with Plannotator first:
+Add the plugin to OpenCode configuration:
 
 ```json
 {
-  "plugin": [
-    ["@plannotator/opencode@latest", { "workflow": "all-agents" }],
-    "opencode-multireview-plugin"
-  ]
+  "plugin": ["opencode-multireview-plugin"]
 }
 ```
 
 Restart OpenCode after changing plugin configuration.
 
 ## Install from a local checkout
-
-For development or before a version is published, install directly from a local path:
 
 ```bash
 cd ~/.config/opencode
@@ -59,36 +40,11 @@ Or reference the built plugin file directly:
 
 ```json
 {
-  "plugin": [
-    ["@plannotator/opencode@latest", { "workflow": "all-agents" }],
-    "file:///path/to/opencode-multireview-plugin/dist/index.js"
-  ]
+  "plugin": ["file:///path/to/opencode-multireview-plugin/dist/index.js"]
 }
 ```
 
-
-## Bundled skills
-
-The bundled skills are copied during `npm install`, respecting `$XDG_CONFIG_HOME` when set:
-
-- `~/.config/opencode/skills/multireview-explainer/SKILL.md`
-- `~/.config/opencode/skills/multireview-diff/SKILL.md`
-
-## Plannotator requirement
-
-This plugin depends on Plannotator but does not vendor it. By default it fails during the config hook if `@plannotator/opencode` is not present in `cfg.plugin`. The bundled skills also expect the `plannotator` CLI to be available on `PATH`.
-
-For development only, the runtime check can be disabled:
-
-```json
-{
-  "plannotator": {
-    "requirePlugin": false
-  }
-}
-```
-
-## Config overrides
+## Configuration
 
 Defaults:
 
@@ -99,24 +55,11 @@ Defaults:
     "codestyle": "github-copilot/claude-sonnet-5",
     "correctness": "github-copilot/gpt-5.4",
     "testing": "github-copilot/gemini-3.5-flash"
-  },
-  "plannotator": {
-    "requirePlugin": true
   }
 }
 ```
 
-Create `~/.config/opencode/multireview-plugin.json` to override them locally:
-
-```json
-{
-  "models": {
-    "correctness": "github-copilot/gpt-5.2"
-  }
-}
-```
-
-Models can also include an OpenCode agent variant. Strings remain supported:
+Create `~/.config/opencode/multireview-plugin.json` to override models locally:
 
 ```json
 {
@@ -129,7 +72,7 @@ Models can also include an OpenCode agent variant. Strings remain supported:
 }
 ```
 
-Define reusable profiles in the same file and select one with `profile`:
+Strings remain supported. Define reusable profiles in the same file and select one with `profile`:
 
 ```json
 {
@@ -146,7 +89,7 @@ Define reusable profiles in the same file and select one with `profile`:
 }
 ```
 
-`OPENCODE_MULTIREVIEW_PROFILE` selects a non-empty environment value before the file's `profile`; an empty value is ignored. Precedence is shipped defaults, selected profile, file `models`, then tuple `models`. Each reviewer override replaces both its model and variant, so a higher-level string also clears a lower-level variant. The reserved `default` profile means the shipped baseline and cannot be defined under `profiles`.
+`OPENCODE_MULTIREVIEW_PROFILE` selects a non-empty environment value before the file's `profile`; an empty value is ignored. Precedence is shipped defaults, selected profile, file `models`, then tuple `models`. Each reviewer override replaces both its model and variant. The reserved `default` profile means the shipped baseline and cannot be defined under `profiles`.
 
 An unknown selected profile warns and falls back to shipped defaults; file and tuple model overrides still apply. Invalid model/profile entries, including arrays, empty models or variants, unknown reviewers, and `profiles.default`, fail during config loading. Profile and model settings are read when the plugin loads, so restart OpenCode after changing them.
 
@@ -155,7 +98,6 @@ Plugin tuple options override the local file:
 ```json
 {
   "plugin": [
-    ["@plannotator/opencode@latest", { "workflow": "all-agents" }],
     [
       "opencode-multireview-plugin",
       {
@@ -167,15 +109,24 @@ Plugin tuple options override the local file:
 }
 ```
 
-Tuple options are limited to `configPath`, `models`, and `plannotator`; profiles are file configuration only.
+Tuple options are limited to `configPath` and `models`; profiles are file configuration only.
 
-## CLI helpers
+## Findings parser
 
-The skills call package bins rather than absolute local paths:
+The package exposes the retained parser CLI:
 
-- `opencode-multireview-parse-findings`
-- `opencode-multireview-build-explainer`
-- `opencode-multireview-build-code-annotations`
+```bash
+opencode-multireview-parse-findings parse REVIEW_FINDINGS.md
+```
+
+It parses the `REVIEW_FINDINGS.md` contract and emits structured findings for downstream tooling. The source parser is also available at `assets/scripts/parse-review-findings.mjs`.
+
+## Upgrade note
+
+Package upgrades do not delete skill files copied by earlier package versions. If they are no longer needed, manually remove these directories:
+
+- `~/.config/opencode/skills/multireview-explainer`
+- `~/.config/opencode/skills/multireview-diff`
 
 ## Development
 
@@ -188,27 +139,20 @@ npm pack --dry-run
 
 ## CI
 
-GitHub Actions runs `.github/workflows/ci.yml` on pushes to `main` and on pull requests:
-
-```bash
-npm install
-npm test
-```
+GitHub Actions runs `.github/workflows/ci.yml` on pushes to `main` and on pull requests.
 
 ## Publishing
 
-Releases are published to npm via a GitHub Actions workflow (`.github/workflows/publish.yml`) using npm's trusted publishing (OIDC), triggered when a `vX.Y.Z` tag is pushed. The same workflow also creates the GitHub Release automatically. No long-lived npm token is stored in the repository.
+Releases are published to npm via a GitHub Actions workflow using npm trusted publishing (OIDC), triggered when a `vX.Y.Z` tag is pushed. The same workflow creates the GitHub Release automatically.
 
-Cut releases with `release-it`, which bumps `package.json`, updates `CHANGELOG.md`, and creates and pushes the `vX.Y.Z` tag:
+Cut releases with `release-it`:
 
 ```bash
 npm run release
 ```
 
-To preview the release without changing anything:
+To preview a release without changing anything:
 
 ```bash
 npm run release:dry-run
 ```
-
-Once the tag is pushed, `.github/workflows/publish.yml` creates the GitHub Release, builds, tests, and publishes the package to npm.

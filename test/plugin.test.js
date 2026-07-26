@@ -2,17 +2,23 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { MultireviewPlugin } from "../dist/index.js";
 
-test("fails when Plannotator plugin is not configured by default", async () => {
+test("initializes and injects all agents without a companion plugin", async () => {
   const plugin = await MultireviewPlugin({}, { configPath: "/nonexistent/multireview-plugin.json" });
-  const cfg = { plugin: ["opencode-multireview-plugin"] };
+  const cfg = { agent: {} };
 
-  await assert.rejects(() => plugin.config(cfg), /requires @plannotator\/opencode/);
+  await plugin.config(cfg);
+
+  assert.deepEqual(Object.keys(cfg.agent).sort(), [
+    "multireview",
+    "multireview_codestyle",
+    "multireview_correctness",
+    "multireview_testing",
+  ]);
 });
 
 test("registers agents without removing existing config", async () => {
   const plugin = await MultireviewPlugin({}, { configPath: "/nonexistent/multireview-plugin.json" });
   const cfg = {
-    plugin: ["opencode-multireview-plugin", ["@plannotator/opencode@latest", { workflow: "all-agents" }]],
     agent: {
       existing_agent: { model: "keep-me" },
       multireview: { model: "user-model", permission: { bash: "allow" } },
@@ -28,11 +34,9 @@ test("registers agents without removing existing config", async () => {
 });
 
 test("injects model and variant into an absent agent", async () => {
-  const dir = "/tmp/opencode-multireview-plugin-variant-test.json";
   const plugin = await MultireviewPlugin({}, {
-    configPath: dir,
+    configPath: "/tmp/opencode-multireview-plugin-variant-test.json",
     models: { correctness: { model: "review-model", variant: "thorough" } },
-    plannotator: { requirePlugin: false },
   });
   const cfg = { agent: {} };
 
@@ -46,7 +50,6 @@ test("preserves explicit user agent model and variant", async () => {
   const plugin = await MultireviewPlugin({}, {
     configPath: "/tmp/opencode-multireview-plugin-user-agent-test.json",
     models: { correctness: { model: "review-model", variant: "thorough" } },
-    plannotator: { requirePlugin: false },
   });
   const cfg = {
     agent: { multireview_correctness: { model: "user-model", variant: "user-variant" } },
@@ -56,16 +59,4 @@ test("preserves explicit user agent model and variant", async () => {
 
   assert.equal(cfg.agent.multireview_correctness.model, "user-model");
   assert.equal(cfg.agent.multireview_correctness.variant, "user-variant");
-});
-
-test("can disable the Plannotator config check for development", async () => {
-  const plugin = await MultireviewPlugin(
-    {},
-    { configPath: "/nonexistent/multireview-plugin.json", plannotator: { requirePlugin: false } },
-  );
-  const cfg = { plugin: ["opencode-multireview-plugin"] };
-
-  await plugin.config(cfg);
-
-  assert.ok(cfg.agent.multireview_testing);
 });

@@ -12,15 +12,11 @@ export type ModelSelection = {
 
 export type MultireviewPluginConfig = {
   models: Record<ReviewerKey, ModelSelection>
-  plannotator: {
-    requirePlugin: boolean
-  }
 }
 
 export type MultireviewPluginOptions = Partial<{
   configPath: string
   models: Partial<Record<ReviewerKey, ModelSelectionInput>>
-  plannotator: Partial<{ requirePlugin: boolean }>
 }>
 
 export const DEFAULT_CONFIG: MultireviewPluginConfig = {
@@ -30,9 +26,6 @@ export const DEFAULT_CONFIG: MultireviewPluginConfig = {
     correctness: { model: "github-copilot/gpt-5.4" },
     testing: { model: "github-copilot/gemini-3.5-flash" },
   },
-  plannotator: {
-    requirePlugin: true,
-  },
 }
 
 export const AGENT_NAMES = {
@@ -41,5 +34,3 @@ export const AGENT_NAMES = {
   correctness: "multireview_correctness",
   testing: "multireview_testing",
 } as const satisfies Record<ReviewerKey, string>
-
-export const PLANNOTATOR_PLUGIN_NAME = "@plannotator/opencode"
