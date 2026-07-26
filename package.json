@@ -1,7 +1,7 @@
 {
   "name": "opencode-multireview-plugin",
   "version": "0.3.0",
-  "description": "OpenCode plugin bundling multireview agents and Plannotator review skills.",
+  "description": "OpenCode plugin bundling multireview agents and a review findings parser.",
   "type": "module",
   "main": "dist/index.js",
   "module": "dist/index.js",
@@ -13,15 +13,12 @@
     }
   },
   "bin": {
-    "opencode-multireview-parse-findings": "assets/scripts/parse-review-findings.mjs",
-    "opencode-multireview-build-explainer": "assets/scripts/build-explainer.mjs",
-    "opencode-multireview-build-code-annotations": "assets/scripts/build-code-annotations.mjs"
+    "opencode-multireview-parse-findings": "assets/scripts/parse-review-findings.mjs"
   },
   "files": [
     "dist/",
     "assets/agents/",
     "assets/scripts/",
-    "assets/skills/",
     "config/",
     "README.md",
     "LICENSE"
@@ -33,14 +30,13 @@
     "test": "node --test test/*.test.js",
     "release": "release-it",
     "release:dry-run": "release-it --dry-run",
-    "prepack": "npm run build",
-    "postinstall": "for d in ./assets/skills/*/; do n=$(basename \"$d\"); mkdir -p \"${XDG_CONFIG_HOME:-$HOME/.config}/opencode/skills/$n\" && cp -r \"$d.\" \"${XDG_CONFIG_HOME:-$HOME/.config}/opencode/skills/$n/\"; done 2>/dev/null || true"
+    "prepack": "npm run build"
   },
   "keywords": [
     "opencode",
     "plugin",
     "code-review",
-    "plannotator"
+    "review-findings"
   ],
   "license": "MIT",
   "author": "Daniel Maly",
@@ -51,9 +47,6 @@
   "homepage": "https://github.com/DanielMaly/opencode-multireview-plugin#readme",
   "bugs": {
     "url": "https://github.com/DanielMaly/opencode-multireview-plugin/issues"
-  },
-  "peerDependencies": {
-    "@plannotator/opencode": "*"
   },
   "devDependencies": {
     "@opencode-ai/plugin": "^1.14.20",

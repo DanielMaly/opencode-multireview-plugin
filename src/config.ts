@@ -15,7 +15,6 @@ type PartialConfig = Partial<{
   profile: string
   profiles: Record<string, Partial<Record<ReviewerKey, ModelSelectionInput>>>
   models: Partial<Record<ReviewerKey, ModelSelectionInput>>
-  plannotator: Partial<{ requirePlugin: boolean }>
 }>
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -82,8 +81,6 @@ function parseJsonConfig(path: string): PartialConfig {
   const parsed: unknown = JSON.parse(readFileSync(path, "utf8"))
   if (!isObject(parsed)) throw configError("$", "must be an object")
 
-  const plannotator = isObject(parsed.plannotator) ? parsed.plannotator : undefined
-
   if (parsed.profile !== undefined && (typeof parsed.profile !== "string" || parsed.profile.trim() === "")) {
     throw configError("profile", "must be a non-empty string when provided")
   }
@@ -92,7 +89,6 @@ function parseJsonConfig(path: string): PartialConfig {
     profile: parsed.profile as string | undefined,
     profiles: parseProfiles("profiles", parsed.profiles),
     models: parseModels("models", parsed.models),
-    plannotator: plannotator as Partial<{ requirePlugin: boolean }> | undefined,
   }
 }
 
@@ -112,10 +108,6 @@ function mergeConfig(base: MultireviewPluginConfig, override: PartialConfig | un
       ...base.models,
       ...normalizeModels(override?.models),
     },
-    plannotator: {
-      ...base.plannotator,
-      ...override?.plannotator,
-    },
   }
 }
 
@@ -133,7 +125,6 @@ export function loadMultireviewConfig(options: MultireviewPluginOptions = {}): M
   const fileModelsConfig: PartialConfig | undefined = fileConfig ? { models: fileConfig.models } : undefined
   const optionConfig: PartialConfig = {
     models: options.models,
-    plannotator: options.plannotator,
   }
 
   return mergeConfig(mergeConfig(mergeConfig(DEFAULT_CONFIG, profileConfig), fileModelsConfig), optionConfig)
