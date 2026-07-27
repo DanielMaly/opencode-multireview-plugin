@@ -274,8 +274,8 @@ export class ReviewStore {
     })
   }
 
-  list(): ReviewSummary[] {
-    return withDatabase(this.options, (database) => database.prepare("SELECT r.id, r.target_kind, r.target_key, r.target_label, r.base_ref, r.base_commit, r.current_intent_type, r.current_intent_ref, rr.id AS latest_round_id, rr.completed_at AS latest_round_at, rl.fencing_token, rl.acquired_at FROM reviews r LEFT JOIN review_rounds rr ON rr.review_id = r.id AND rr.ordinal = (SELECT MAX(ordinal) FROM review_rounds WHERE review_id = r.id) LEFT JOIN review_locks rl ON rl.review_id = r.id ORDER BY r.project_id, r.target_kind, r.target_key, r.base_commit").all().map((row) => {
+  list(projectKey?: string): ReviewSummary[] {
+    return withDatabase(this.options, (database) => database.prepare("SELECT r.id, r.target_kind, r.target_key, r.target_label, r.base_ref, r.base_commit, r.current_intent_type, r.current_intent_ref, rr.id AS latest_round_id, rr.completed_at AS latest_round_at, rl.fencing_token, rl.acquired_at FROM reviews r LEFT JOIN review_rounds rr ON rr.review_id = r.id AND rr.ordinal = (SELECT MAX(ordinal) FROM review_rounds WHERE review_id = r.id) LEFT JOIN review_locks rl ON rl.review_id = r.id WHERE (? IS NULL OR r.project_id = (SELECT id FROM projects WHERE project_key = ?)) ORDER BY r.project_id, r.target_kind, r.target_key, r.base_commit").all(projectKey ?? null, projectKey ?? null).map((row) => {
       const value = row as Record<string, unknown>
       return {
         id: value.id as string,
