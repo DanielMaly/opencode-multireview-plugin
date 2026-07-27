@@ -89,4 +89,16 @@ npm pack --dry-run
 
 ## Publishing
 
-Publishing and tagging remain the final release action after all v1 gates pass. Do not use `npm run release` until the real installed-skill OpenCode smoke gate has passed.
+Releases are published to npm via a GitHub Actions workflow using npm trusted publishing (OIDC), triggered when a `vX.Y.Z` tag is pushed. The same workflow creates the GitHub Release automatically.
+
+Cut releases with `release-it`:
+
+```bash
+npm run release
+```
+
+To preview a release without changing anything:
+
+```bash
+npm run release:dry-run
+```
