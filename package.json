@@ -3,6 +3,9 @@
   "version": "0.4.0",
   "description": "OpenCode plugin bundling multireview agents and a review findings parser.",
   "type": "module",
+  "engines": {
+    "node": ">=24.15.0"
+  },
   "main": "dist/index.js",
   "module": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -18,6 +21,7 @@
   "files": [
     "dist/",
     "assets/agents/",
+    "assets/migrations/",
     "assets/scripts/",
     "config/",
     "README.md",
