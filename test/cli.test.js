@@ -6,13 +6,14 @@ import { tmpdir } from "node:os"
 import test from "node:test"
 import { ReviewStore } from "../dist/storage/reviews.js"
 import { resolveRepositoryIdentity } from "../dist/repository.js"
+import { resolveDatabasePath } from "../dist/storage/path.js"
 
 const cli = new URL("../dist/cli.js", import.meta.url)
 
 function fixture() {
   const directory = mkdtempSync(join(tmpdir(), "opencode-multireview-cli-"))
   const home = join(directory, "home")
-  const databasePath = join(home, "Library", "Application Support", "opencode-multireview", "reviews.sqlite")
+  const databasePath = resolveDatabasePath({ home })
   const env = { ...process.env, HOME: home }
   const identity = {
     projectKey: "cli-project",
