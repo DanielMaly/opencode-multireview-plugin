@@ -26,14 +26,21 @@ export interface IgnoredSnapshot extends NormalizedFinding {
   id: number
 }
 
-export interface BeginReviewResult {
+export type BeginReviewResult = {
   reviewId: string
+  locked: false
   roundId: string
-  fencingToken?: string
-  acquiredAt?: string
-  locked: boolean
+  fencingToken: string
+  acquiredAt: string
   previousIgnored: IgnoredSnapshot[]
+} | {
+  reviewId: string
+  locked: true
+  acquiredAt: string
+  previousIgnored: []
 }
+
+export type ReviewScope = Pick<ResolvedReviewIdentity, "projectKey" | "worktreePath">
 
 export interface CompleteReviewRequest {
   reviewId: string
@@ -118,7 +125,7 @@ export class ReviewStore {
           : undefined
         if (existing && lock) {
           database.exec("COMMIT")
-          return { reviewId: existing.id, roundId: randomUUID(), locked: true, acquiredAt: lock.acquired_at, previousIgnored: [] }
+          return { reviewId: existing.id, locked: true, acquiredAt: lock.acquired_at, previousIgnored: [] }
         }
         let projectId: number
         if (project) {
@@ -202,6 +209,20 @@ export class ReviewStore {
       } catch (error) {
         try { database.exec("ROLLBACK") } catch { /* retain original error */ }
         throw error
+      }
+    })
+  }
+
+  assertReviewScope(reviewId: string, scope: ReviewScope): void {
+    withDatabase(this.options, (database) => {
+      const row = database.prepare("SELECT p.project_key, r.target_kind, w.path FROM reviews r JOIN projects p ON p.id = r.project_id JOIN worktrees w ON w.id = r.worktree_id WHERE r.id = ?").get(reviewId) as {
+        project_key: string
+        target_kind: string
+        path: string
+      } | undefined
+      if (!row || row.project_key !== scope.projectKey) throw new Error("review is outside the trusted project scope")
+      if (row.target_kind === "uncommitted" && row.path !== scope.worktreePath) {
+        throw new Error("uncommitted review is outside the trusted worktree scope")
       }
     })
   }

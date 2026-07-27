@@ -12,39 +12,49 @@ type AgentDefinition = {
   variant?: string
   prompt: string
   permission: Record<string, "allow" | "deny">
+  tools: Record<string, boolean>
 }
 
 const AGENT_METADATA: Record<ReviewerKey, { description: string; mode: AgentMode; promptFile: string }> = {
   coordinator: {
     description: "Principal Engineer Coordinator for adversarial, multi-model code review.",
     mode: "all",
-    promptFile: "multireview.md",
+    promptFile: "mmar_orchestrator.md",
   },
   codestyle: {
     description:
       "Senior Engineer focused exclusively on code style and readability review. Use when the user wants a style-only code review, linting feedback, naming feedback, or wants to know if their code follows conventions and clean code principles.",
     mode: "subagent",
-    promptFile: "multireview_codestyle.md",
+    promptFile: "mmar_codestyle.md",
   },
   correctness: {
     description:
       "Senior Engineer focused exclusively on correctness and security code review — covering logic soundness, edge cases, error handling, concurrency, performance, and OWASP Top 10 vulnerabilities. Use when the user wants a correctness-only or security-only review, wants to find bugs, race conditions, unhandled errors, or security vulnerabilities, or explicitly wants to exclude style/readability feedback.",
     mode: "subagent",
-    promptFile: "multireview_correctness.md",
+    promptFile: "mmar_correctness.md",
   },
   testing: {
     description:
       "Senior Engineer focused exclusively on test coverage review. Use when the user wants to review test coverage for a changeset, wants to know if their unit tests are sufficient, or wants to identify gaps in testing for new or modified code paths.",
     mode: "subagent",
-    promptFile: "multireview_testing.md",
+    promptFile: "mmar_testing.md",
+  },
+  intent: {
+    description: "Senior Engineer focused exclusively on conformance to caller-supplied plans, specifications, tickets, and decisions.",
+    mode: "subagent",
+    promptFile: "mmar_intent.md",
   },
 } as const
 
 const COORDINATOR_PERMISSION = {
   read: "allow",
-  edit: "allow",
   task: "allow",
   bash: "deny",
+} as const
+
+const COORDINATOR_TOOLS = {
+  mmar_begin: true,
+  mmar_complete: true,
 } as const
 
 const REVIEWER_PERMISSION = {
@@ -55,11 +65,17 @@ const REVIEWER_PERMISSION = {
   edit: "deny",
 } as const
 
+const REVIEWER_TOOLS = {
+  mmar_begin: false,
+  mmar_complete: false,
+} as const
+
 export function buildAgents(config: MultireviewPluginConfig): Record<string, AgentDefinition> {
   return Object.fromEntries(
     (Object.keys(AGENT_NAMES) as ReviewerKey[]).map((key) => {
       const metadata = AGENT_METADATA[key]
       const permission = key === "coordinator" ? COORDINATOR_PERMISSION : REVIEWER_PERMISSION
+      const tools = key === "coordinator" ? COORDINATOR_TOOLS : REVIEWER_TOOLS
       const prompt = readFileSync(join(agentsDirectory, metadata.promptFile), "utf8")
 
       return [
@@ -71,6 +87,7 @@ export function buildAgents(config: MultireviewPluginConfig): Record<string, Age
           ...(config.models[key].variant === undefined ? {} : { variant: config.models[key].variant }),
           prompt,
           permission,
+          tools,
         },
       ]
     }),
