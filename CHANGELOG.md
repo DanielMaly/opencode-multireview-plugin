@@ -1,5 +1,15 @@
 # Changelog
 
+## [v1.0.0-0](https://github.com/DanielMaly/opencode-multireview-plugin/compare/v0.4.0...v1.0.0-0) (2026-07-27)
+
+- Fix interactive unlock test hang [`#12`](https://github.com/DanielMaly/opencode-multireview-plugin/pull/12)
+- Add MMAR skill and installer [`#11`](https://github.com/DanielMaly/opencode-multireview-plugin/pull/11)
+- Add MMAR history CLI [`#10`](https://github.com/DanielMaly/opencode-multireview-plugin/pull/10)
+- Add MMAR tools and agents [`#9`](https://github.com/DanielMaly/opencode-multireview-plugin/pull/9)
+- Add durable SQLite review storage [`#8`](https://github.com/DanielMaly/opencode-multireview-plugin/pull/8)
+- Release v1.0.0-0 [`6af17fd`](https://github.com/DanielMaly/opencode-multireview-plugin/commit/6af17fdfb76d36227b90970c4a719b070e2c22fe)
+- Back to v0.4.0 [`1a0ad7c`](https://github.com/DanielMaly/opencode-multireview-plugin/commit/1a0ad7cb8c231a678b0b26fe8fc8ff154a310d49)
+
 ## [v0.4.0](https://github.com/DanielMaly/opencode-multireview-plugin/compare/v0.3.0...v0.4.0) (2026-07-26)
 
 - Remove Plannotator integration [`#7`](https://github.com/DanielMaly/opencode-multireview-plugin/pull/7)
