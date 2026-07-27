@@ -39,13 +39,23 @@ function run(args, env, options = {}) {
 function interactiveUnlock(reviewId, env) {
   const python = [
     "import os, pty, sys",
+    "buffer = bytearray()",
+    "confirmed = False",
     "def read(fd):",
+    "    global confirmed",
     "    data = os.read(fd, 1024)",
-    "    if b'[y/N]' in data: os.write(fd, b'y\\r')",
+    "    buffer.extend(data)",
+    "    if not confirmed and b'[y/N]' in buffer:",
+    "        confirmed = True",
+    "        os.write(fd, b'y\\r')",
     "    return data",
     "sys.exit(pty.spawn(sys.argv[1:], read))",
   ].join("\n")
-  return spawnSync("python3", ["-c", python, process.execPath, cli.pathname, "unlock", reviewId], { env, encoding: "utf8" })
+  return spawnSync("python3", ["-c", python, process.execPath, cli.pathname, "unlock", reviewId], {
+    env,
+    encoding: "utf8",
+    timeout: 10_000,
+  })
 }
 
 function interactiveUnlockRace(context, reviewId) {
@@ -53,9 +63,14 @@ function interactiveUnlockRace(context, reviewId) {
   const release = join(context.directory, "release-unlock.txt")
   const python = [
     "import os, pty, sys, time",
+    "buffer = bytearray()",
+    "confirmed = False",
     "def read(fd):",
+    "    global confirmed",
     "    data = os.read(fd, 1024)",
-    "    if b'[y/N]' in data:",
+    "    buffer.extend(data)",
+    "    if not confirmed and b'[y/N]' in buffer:",
+    "        confirmed = True",
     "        open(sys.argv[5], 'w').close()",
     "        while not os.path.exists(sys.argv[6]): time.sleep(0.01)",
     "        os.write(fd, b'y\\r')",
@@ -85,8 +100,13 @@ function interactiveUnlockRace(context, reviewId) {
     })
     child.stderr.on("data", (chunk) => { output += chunk.toString() })
     child.on("error", reject)
+    const timeout = setTimeout(() => {
+      child.kill("SIGKILL")
+      reject(new Error("Timed out waiting for interactive unlock"))
+    }, 10_000)
     child.on("close", (status) => {
       clearInterval(replacement)
+      clearTimeout(timeout)
       resolve({ status, output })
     })
   })
