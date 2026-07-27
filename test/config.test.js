@@ -12,6 +12,7 @@ test("uses defaults when no config file exists", () => {
   assert.deepEqual(config.models.codestyle, { model: "github-copilot/claude-sonnet-5" });
   assert.deepEqual(config.models.correctness, { model: "github-copilot/gpt-5.4" });
   assert.deepEqual(config.models.testing, { model: "github-copilot/gemini-3.5-flash" });
+  assert.deepEqual(config.models.intent, { model: "github-copilot/claude-opus-4.8" });
 });
 
 test("ignores legacy unknown configuration keys", () => {
@@ -26,6 +27,7 @@ test("ignores legacy unknown configuration keys", () => {
         codestyle: { model: "github-copilot/claude-sonnet-5" },
         correctness: { model: "github-copilot/gpt-5.4" },
         testing: { model: "github-copilot/gemini-3.5-flash" },
+        intent: { model: "github-copilot/claude-opus-4.8" },
       },
     });
   } finally {
@@ -51,6 +53,7 @@ test("normalizes legacy string and object model overrides", () => {
     assert.deepEqual(config.models.correctness, { model: "local-correctness" });
     assert.deepEqual(config.models.testing, { model: "option-testing" });
     assert.deepEqual(config.models.coordinator, { model: "github-copilot/claude-opus-4.8" });
+    assert.deepEqual(config.models.intent, { model: "github-copilot/claude-opus-4.8" });
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -133,6 +136,7 @@ test("warns and falls back to shipped defaults for an unknown profile", () => {
     const config = loadMultireviewConfig({ configPath, models: { correctness: "tuple-correctness" } });
 
     assert.deepEqual(config.models.coordinator, { model: "github-copilot/claude-opus-4.8" });
+    assert.deepEqual(config.models.intent, { model: "github-copilot/claude-opus-4.8" });
     assert.deepEqual(config.models.testing, { model: "file-testing" });
     assert.deepEqual(config.models.correctness, { model: "tuple-correctness" });
     assert.equal(warnings.length, 1);
