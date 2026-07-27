@@ -1,25 +1,27 @@
 # opencode-multireview-plugin
 
-Local-first, npm-ready OpenCode plugin bundling four adversarial multireview agents and a review-findings parser.
-
-## What multireview does
-
-`@multireview` is an adversarial code review coordinator. It spawns three specialist reviewers in parallel, each scoped to a single concern and blind to the others' findings:
-
-- **`multireview_correctness`** — logic soundness, edge cases, error handling, concurrency, performance, and OWASP-style security issues.
-- **`multireview_codestyle`** — naming, function design, comments, DRY violations, and file/code organisation.
-- **`multireview_testing`** — unit and integration test coverage for changed code, plus test-quality anti-patterns.
-
-The coordinator acts as final arbiter: it discards hallucinated, out-of-scope, or overly pedantic findings, merges duplicates, and writes the result to `REVIEW_FINDINGS.md` in the repository root. Findings are split into `## Valid Findings` and `## Ignored Findings`; every ignored finding carries a one-line `Wontfix:` justification.
+Local-first MMAR (multi-model adversarial review) tooling for OpenCode. The plugin provides five renamed agents, durable SQLite review history, fenced locks, deterministic export, and the caller-facing `mmar` skill.
 
 ## Install
 
 ```bash
-cd ~/.config/opencode
 npm install opencode-multireview-plugin
+opencode-multireview skill install --global
 ```
 
-Add the plugin to OpenCode configuration:
+The manual installer is recommended for project-local installs:
+
+```bash
+opencode-multireview skill install --project
+```
+
+The global skill is installed at `${XDG_CONFIG_HOME}/opencode/skills/mmar/SKILL.md` when `XDG_CONFIG_HOME` is set, otherwise at `~/.config/opencode/skills/mmar/SKILL.md`. Project installs go to `<project>/.opencode/skills/mmar/SKILL.md`. These are OpenCode-native paths; no `.claude` or `.agents` compatibility path is used.
+
+`npm install` asks `Install skill (recommended)? [Y/n]` only when both standard streams are TTYs. `n` skips. A non-interactive install succeeds without changing user configuration and prints the manual global install command. Use the manual command for repair or explicit project installation.
+
+Each installed skill has a `.provenance.json` sidecar containing the package name, version, and content checksum. A missing copy is created; an unchanged plugin-owned older copy is updated; an unchanged current copy is left alone. A modified or unowned copy is preserved and never silently overwritten. `npm uninstall` therefore cannot silently remove user-owned or modified skill files.
+
+Add the plugin to OpenCode configuration if it is not already loaded:
 
 ```json
 {
@@ -29,106 +31,54 @@ Add the plugin to OpenCode configuration:
 
 Restart OpenCode after changing plugin configuration.
 
-## Install from a local checkout
+## MMAR operations
+
+The `mmar` skill is the review entrypoint. It normalizes a target (pull request, branch, commit, uncommitted worktree, or custom changeset), requires and resolves a base ref, and then delegates compact scope metadata to `mmar_orchestrator`.
+
+An optional Jira key/URL is resolved through the caller's authenticated Jira integration. An explicit local intent path is read exactly as supplied. Successful content is passed to the intent agent, but only the normalized reference is persisted. Failed resolution passes the reference and concise error, still launches `mmar_intent`, and produces intent uncertainty; it never invents content or silently becomes a no-intent review.
+
+The same project/target/resolved-base scope can reuse the orchestrator session across caller sessions. A different target or base starts a new scope and cannot inherit unrelated findings. `mmar_begin` runs before diff inspection or specialist spawning. Lock contention reports the active review and exits without spawning specialists. If orchestration fails after acquisition, inspect the lock and ask before recovery:
 
 ```bash
-cd ~/.config/opencode
-npm install /path/to/opencode-multireview-plugin
+opencode-multireview unlock <review-id>
 ```
 
-Or reference the built plugin file directly:
+Use `--force` only after explicit confirmation in a non-interactive environment. Locks do not expire automatically, and fencing prevents a stale invocation from completing after recovery.
 
-```json
-{
-  "plugin": ["file:///path/to/opencode-multireview-plugin/dist/index.js"]
-}
-```
-
-## Configuration
-
-Defaults:
-
-```json
-{
-  "models": {
-    "coordinator": "github-copilot/claude-opus-4.8",
-    "codestyle": "github-copilot/claude-sonnet-5",
-    "correctness": "github-copilot/gpt-5.4",
-    "testing": "github-copilot/gemini-3.5-flash"
-  }
-}
-```
-
-Create `~/.config/opencode/multireview-plugin.json` to override models locally:
-
-```json
-{
-  "models": {
-    "correctness": {
-      "model": "github-copilot/gpt-5.4",
-      "variant": "high"
-    }
-  }
-}
-```
-
-Strings remain supported. Define reusable profiles in the same file and select one with `profile`:
-
-```json
-{
-  "profile": "fast",
-  "profiles": {
-    "fast": {
-      "coordinator": "github-copilot/claude-sonnet-5",
-      "testing": { "model": "github-copilot/gemini-3.5-flash", "variant": "fast" }
-    },
-    "thorough": {
-      "correctness": { "model": "github-copilot/gpt-5.4", "variant": "high" }
-    }
-  }
-}
-```
-
-`OPENCODE_MULTIREVIEW_PROFILE` selects a non-empty environment value before the file's `profile`; an empty value is ignored. Precedence is shipped defaults, selected profile, file `models`, then tuple `models`. Each reviewer override replaces both its model and variant. The reserved `default` profile means the shipped baseline and cannot be defined under `profiles`.
-
-An unknown selected profile warns and falls back to shipped defaults; file and tuple model overrides still apply. Invalid model/profile entries, including arrays, empty models or variants, unknown reviewers, and `profiles.default`, fail during config loading. Profile and model settings are read when the plugin loads, so restart OpenCode after changing them.
-
-Plugin tuple options override the local file:
-
-```json
-{
-  "plugin": [
-    [
-      "opencode-multireview-plugin",
-      {
-        "configPath": "~/.config/opencode/multireview-plugin.json",
-        "models": { "testing": "github-copilot/gemini-3.1-pro-preview" }
-      }
-    ]
-  ]
-}
-```
-
-Tuple options are limited to `configPath` and `models`; profiles are file configuration only.
-
-## Findings parser
-
-The package exposes the retained parser CLI:
+Agents never read or write `REVIEW_FINDINGS.md`, other agent Markdown, or git excludes. SQLite is canonical. Markdown is an explicit CLI projection only:
 
 ```bash
-opencode-multireview-parse-findings parse REVIEW_FINDINGS.md
+opencode-multireview list [--all-projects] [--json]
+opencode-multireview export <review-id> [--round <round-id>] [--output <path>]
+opencode-multireview unlock <review-id> [--force]
 ```
 
-It parses the `REVIEW_FINDINGS.md` contract and emits structured findings for downstream tooling. The source parser is also available at `assets/scripts/parse-review-findings.mjs`.
+Exports are deterministic and can select the latest or any immutable historical round. `--output` writes atomically.
 
-## Upgrade note
+## Storage and configuration
 
-Package upgrades do not delete skill files copied by earlier package versions. If they are no longer needed, manually remove these directories:
+The database is created on first use and migrated with packaged, checksummed forward-only SQL migrations. Its default location is:
 
-- `~/.config/opencode/skills/multireview-explainer`
-- `~/.config/opencode/skills/multireview-diff`
+- macOS: `~/Library/Application Support/opencode-multireview/reviews.sqlite`
+- Windows: `%LOCALAPPDATA%/opencode-multireview/reviews.sqlite`
+- Linux/other: `$XDG_DATA_HOME/opencode-multireview/reviews.sqlite`, or `~/.local/share/opencode-multireview/reviews.sqlite`
+
+The database stores review identity, immutable structured rounds, findings, uncertainties, and lock metadata. It does not store fetched Jira/local source content, full diffs, transcripts, or Markdown files.
+
+Model defaults and profiles remain configurable in `~/.config/opencode/multireview-plugin.json`; plugin tuple options can override `configPath` and model selections. The reviewer keys are `coordinator`, `correctness`, `codestyle`, `testing`, and `intent`.
+
+## v1 breaking changes
+
+- The old `multireview*` agent names and old parser CLI are removed; there are no compatibility aliases.
+- `opencode-multireview-parse-findings` and `assets/scripts/parse-review-findings.mjs` are removed. Use `opencode-multireview export` for explicit Markdown projection.
+- `REVIEW_FINDINGS.md` is neither imported nor read, written, or deleted by v1 agents. Existing files remain untouched.
+- Existing per-repository legacy agents, skills, and tools are neither imported nor removed. The `mmar_*` names avoid those collisions.
+- Review identity now includes project, normalized target, and resolved base commit. A required or unresolvable base prevents a review from starting.
+- Review history is SQLite-backed and locks are fenced; there is no Markdown fallback or automatic lock expiry.
 
 ## Development
+
+Requires Node `>=24.15.0`.
 
 ```bash
 npm install
@@ -136,10 +86,6 @@ npm run typecheck
 npm test
 npm pack --dry-run
 ```
-
-## CI
-
-GitHub Actions runs `.github/workflows/ci.yml` on pushes to `main` and on pull requests.
 
 ## Publishing
 

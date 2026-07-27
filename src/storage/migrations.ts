@@ -2,7 +2,7 @@ import { createHash } from "node:crypto"
 import { readdirSync, readFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
-import type { DatabaseSync } from "node:sqlite"
+import type { SqliteDatabase } from "./database.js"
 
 interface Migration {
   version: number
@@ -43,7 +43,7 @@ function discoverMigrations(directory = migrationDirectory()): Migration[] {
   return migrations
 }
 
-export function applyMigrations(database: DatabaseSync, directory?: string): void {
+export function applyMigrations(database: SqliteDatabase, directory?: string): void {
   const migrations = discoverMigrations(directory)
   database.exec("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, checksum TEXT NOT NULL, applied_at TEXT NOT NULL)")
   const applied = database.prepare("SELECT version, name, checksum FROM schema_migrations ORDER BY version").all() as Array<{
