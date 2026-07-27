@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto"
-import type { DatabaseOptions } from "./database.js"
+import type { DatabaseOptions, SqliteDatabase } from "./database.js"
 import { withDatabase } from "./database.js"
 import {
   normalizeRoundPayload,
@@ -318,7 +318,7 @@ export class ReviewStore {
     return withDatabase(this.options, (database) => database.prepare("DELETE FROM review_locks WHERE review_id = ? AND fencing_token = ?").run(reviewId, fencingToken).changes > 0)
   }
 
-  private readRound(database: import("node:sqlite").DatabaseSync, row: Record<string, unknown>): ReviewRound {
+  private readRound(database: SqliteDatabase, row: Record<string, unknown>): ReviewRound {
     const roundId = row.id as string
     const findings = database.prepare("SELECT id, disposition, severity, category, title, body_markdown, wontfix, source_agents_json, content_hash FROM findings WHERE round_id = ? ORDER BY disposition, ordinal").all(roundId) as Array<Record<string, unknown>>
     const uncertainties = database.prepare("SELECT id, ordinal, title, observed_evidence, missing_context, clarification_question FROM intent_uncertainties WHERE round_id = ? ORDER BY ordinal").all(roundId) as Array<Record<string, unknown>>

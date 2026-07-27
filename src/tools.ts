@@ -3,7 +3,7 @@ import { relative, resolve } from "node:path"
 import { tool, type ToolContext, type ToolDefinition } from "@opencode-ai/plugin"
 import { normalizeTarget, resolveRepositoryIdentity, resolveReviewIdentity, type TargetInput } from "./repository.js"
 import type { DatabaseOptions } from "./storage/database.js"
-import { ReviewStore } from "./storage/reviews.js"
+import type { ReviewStore } from "./storage/reviews.js"
 
 const z = tool.schema
 
@@ -85,7 +85,15 @@ function json(value: unknown): string {
 }
 
 export function createMmarTools(databaseOptions: DatabaseOptions = {}): Record<string, ToolDefinition> {
-  const store = new ReviewStore(databaseOptions)
+  let store: ReviewStore | undefined
+  const getStore = async (): Promise<ReviewStore> => {
+    if (!store) {
+      const { ReviewStore: ReviewStoreClass } = await import("./storage/reviews.js")
+      store = new ReviewStoreClass(databaseOptions)
+    }
+    return store
+  }
+
   const begin = tool({
     description: "Begin a fenced MMAR review round for the trusted current worktree.",
     args: beginArgsSchema.shape,
@@ -94,7 +102,7 @@ export function createMmarTools(databaseOptions: DatabaseOptions = {}): Record<s
       const worktree = trustedWorktree(context)
       const identity = resolveReviewIdentity(worktree, input.baseRef)
       const target = normalizeTarget(input.target as TargetInput, identity)
-      const review = store.begin({ identity, target, intent: input.intent ?? undefined })
+      const review = (await getStore()).begin({ identity, target, intent: input.intent ?? undefined })
       return json({
         ...review,
         requestScope: input.requestScope,
@@ -118,8 +126,9 @@ export function createMmarTools(databaseOptions: DatabaseOptions = {}): Record<s
       const input = completeArgsSchema.parse(args)
       const worktree = trustedWorktree(context)
       const repository = resolveRepositoryIdentity(worktree)
-      store.assertReviewScope(input.reviewId, repository)
-      const completion = store.complete({
+      const reviewStore = await getStore()
+      reviewStore.assertReviewScope(input.reviewId, repository)
+      const completion = reviewStore.complete({
         reviewId: input.reviewId,
         roundId: input.roundId,
         fencingToken: input.fencingToken,

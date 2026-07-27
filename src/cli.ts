@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 import { randomUUID } from "node:crypto"
 import { createInterface } from "node:readline"
-import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { basename, dirname, resolve } from "node:path"
+import { fileURLToPath } from "node:url"
 import { ReviewStore, type ReviewSummary } from "./storage/reviews.js"
 import { resolveRepositoryIdentity } from "./repository.js"
 import { serializeReviewMarkdown } from "./markdown.js"
+import { installSkill, type InstallMode } from "./installer.js"
 
 function usage(): never {
   throw new Error([
@@ -13,6 +15,7 @@ function usage(): never {
     "  opencode-multireview list [--all-projects] [--json]",
     "  opencode-multireview export <review-id> [--round <round-id>] [--output <path>]",
     "  opencode-multireview unlock <review-id> [--force]",
+    "  opencode-multireview skill install --global|--project",
   ].join("\n"))
 }
 
@@ -148,15 +151,31 @@ async function unlockCommand(args: string[]): Promise<void> {
   process.stdout.write(deleted ? `Unlocked review ${reviewId}.\n` : `Lock for review ${reviewId} was replaced; no lock was removed.\n`)
 }
 
+function skillInstallCommand(args: string[]): void {
+  let mode: InstallMode | undefined
+  for (const arg of args) {
+    if (arg === "--global") {
+      if (mode) throw new Error("--global and --project are mutually exclusive")
+      mode = "global"
+    } else if (arg === "--project") {
+      if (mode) throw new Error("--global and --project are mutually exclusive")
+      mode = "project"
+    } else usage()
+  }
+  if (!mode) throw new Error("exactly one of --global or --project is required")
+  process.stdout.write(`${installSkill(mode).message}\n`)
+}
+
 export async function main(args = process.argv.slice(2)): Promise<void> {
   const [command, ...commandArgs] = args
   if (command === "list") listCommand(commandArgs)
   else if (command === "export") exportCommand(commandArgs)
   else if (command === "unlock") await unlockCommand(commandArgs)
+  else if (command === "skill" && commandArgs[0] === "install") skillInstallCommand(commandArgs.slice(1))
   else usage()
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && realpathSync.native(fileURLToPath(import.meta.url)) === realpathSync.native(resolve(process.argv[1]))) {
   main().catch((error: Error) => {
     process.stderr.write(`Error: ${error.message}\n`)
     process.exitCode = 1
