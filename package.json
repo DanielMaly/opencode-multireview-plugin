@@ -1,7 +1,7 @@
 {
   "name": "opencode-multireview-plugin",
   "version": "0.4.0",
-  "description": "OpenCode plugin bundling multireview agents and a review findings parser.",
+  "description": "OpenCode plugin bundling MMAR review agents and history tools.",
   "type": "module",
   "engines": {
     "node": ">=24.15.0"
@@ -16,13 +16,12 @@
     }
   },
   "bin": {
-    "opencode-multireview-parse-findings": "assets/scripts/parse-review-findings.mjs"
+    "opencode-multireview": "dist/cli.js"
   },
   "files": [
     "dist/",
     "assets/agents/",
     "assets/migrations/",
-    "assets/scripts/",
     "config/",
     "README.md",
     "LICENSE"
