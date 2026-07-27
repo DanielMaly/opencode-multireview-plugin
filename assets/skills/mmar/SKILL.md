@@ -1,6 +1,6 @@
 ---
 name: mmar
-description: Use MMAR for durable, scope-isolated multi-model code reviews when the caller requests an MMAR review.
+description: Run MMAR (multi-model adversarial review) as a durable, scope-isolated code review. Use when the caller requests MMAR, multireview, or a multi-model adversarial review.
 ---
 
 # MMAR caller workflow
