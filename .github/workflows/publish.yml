@@ -33,7 +33,24 @@ jobs:
 
       - run: npm test
 
-      - run: npm publish --access public --provenance
+      - name: Publish package
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+
+          if [[ "$VERSION" == *-* ]]; then
+            PRERELEASE="${VERSION#*-}"
+            IDENTIFIER="${PRERELEASE%%.*}"
+
+            if [[ "$IDENTIFIER" =~ ^[0-9]+$ ]]; then
+              NPM_TAG="next"
+            else
+              NPM_TAG="$IDENTIFIER"
+            fi
+          else
+            NPM_TAG="latest"
+          fi
+
+          npm publish --access public --provenance --tag "$NPM_TAG"
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
