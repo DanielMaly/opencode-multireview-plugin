@@ -24,6 +24,7 @@
     "assets/migrations/",
     "assets/skills/",
     "config/",
+    "scripts/",
     "README.md",
     "LICENSE"
   ],
@@ -35,7 +36,7 @@
     "release": "release-it",
     "release:dry-run": "release-it --dry-run",
     "prepack": "npm run build",
-    "postinstall": "node dist/postinstall.js"
+    "postinstall": "node scripts/postinstall.cjs"
   },
   "dependencies": {
     "@opencode-ai/plugin": "^1.14.20"

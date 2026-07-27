@@ -209,6 +209,7 @@ test("packed artifact contains the installed skill and installer inputs", () => 
   const result = execFileSync("npm", ["pack", "--dry-run", "--json"], { encoding: "utf8" })
   const files = JSON.parse(result).at(-1).files.map((file) => file.path)
   assert.ok(files.includes("assets/skills/mmar/SKILL.md"))
+  assert.ok(files.includes("scripts/postinstall.cjs"))
   assert.ok(files.includes("dist/installer.js"))
   assert.ok(files.includes("dist/postinstall.js"))
 })
