@@ -1,6 +1,6 @@
 {
   "name": "opencode-multireview-plugin",
-  "version": "0.4.0",
+  "version": "1.0.0-0",
   "description": "OpenCode plugin bundling MMAR review agents and history tools.",
   "type": "module",
   "engines": {
@@ -41,7 +41,12 @@
   "dependencies": {
     "@opencode-ai/plugin": "^1.14.20"
   },
-  "keywords": ["opencode", "plugin", "code-review", "review-findings"],
+  "keywords": [
+    "opencode",
+    "plugin",
+    "code-review",
+    "review-findings"
+  ],
   "license": "MIT",
   "author": "Daniel Maly",
   "repository": {
@@ -73,7 +78,9 @@
       "publish": false
     },
     "hooks": {
-      "before:init": ["npm test"],
+      "before:init": [
+        "npm test"
+      ],
       "after:bump": "npx auto-changelog --commit-limit false --template https://raw.githubusercontent.com/release-it/release-it/main/templates/keepachangelog.hbs"
     }
   }

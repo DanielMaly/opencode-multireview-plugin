@@ -1,11 +1,11 @@
 # Changelog
 
-## [v1.0.0] (2026-07-27)
+## [v0.4.0](https://github.com/DanielMaly/opencode-multireview-plugin/compare/v0.3.0...v0.4.0) (2026-07-26)
 
-- Add the caller-facing `mmar` skill with target/base setup, intent-source resolution, session reuse, lock recovery, and no-agent-Markdown guidance.
-- Add ownership-aware global and project skill installation at OpenCode-native paths, with provenance, TTY-only postinstall prompting, and non-interactive manual guidance.
-- Add durable SQLite review operations, fenced locks, deterministic latest/historical Markdown export, and the `opencode-multireview` CLI.
-- Breaking: remove legacy `multireview*` agent names, the `opencode-multireview-parse-findings` CLI, and `assets/scripts/parse-review-findings.mjs`; existing Markdown and legacy user files are not imported or removed.
+- Remove Plannotator integration [`#7`](https://github.com/DanielMaly/opencode-multireview-plugin/pull/7)
+- Add selectable model profiles [`#6`](https://github.com/DanielMaly/opencode-multireview-plugin/pull/6)
+- Add intent review report support [`#4`](https://github.com/DanielMaly/opencode-multireview-plugin/pull/4)
+- Release v0.4.0 [`1c91813`](https://github.com/DanielMaly/opencode-multireview-plugin/commit/1c91813601d3e6053f98f39352c27582e1c1adf6)
 
 ## [v0.3.0](https://github.com/DanielMaly/opencode-multireview-plugin/compare/v0.2.0...v0.3.0) (2026-07-10)
 
