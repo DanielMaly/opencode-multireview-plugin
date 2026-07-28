@@ -20,6 +20,7 @@ export interface BeginReviewRequest {
   identity: ResolvedReviewIdentity
   target: NormalizedTarget
   intent?: IntentReference | null
+  sessionID?: string
 }
 
 export interface IgnoredSnapshot extends NormalizedFinding {
@@ -46,6 +47,7 @@ export interface CompleteReviewRequest {
   reviewId: string
   roundId: string
   fencingToken: string
+  sessionID?: string
   intent?: IntentReference | null
   validFindings?: FindingInput[]
   ignoredFindings?: FindingInput[]
@@ -70,6 +72,21 @@ export interface LockInfo {
   reviewId: string
   fencingToken: string
   acquiredAt: string
+  sessionID?: string
+}
+
+export type IncompleteDiagnosticEvent = "session.error"
+
+export interface IncompleteDiagnosticMarkerRequest {
+  sessionID: string
+  reviewId: string
+  event: IncompleteDiagnosticEvent
+  markerKey?: string
+}
+
+export interface IncompleteDiagnosticMarkerResult {
+  markerId: number
+  deduplicated: boolean
 }
 
 export interface ReviewRound {
@@ -86,6 +103,11 @@ export interface ReviewRound {
 
 function now(): string {
   return new Date().toISOString()
+}
+
+function sessionValue(sessionID: string | undefined): string | null {
+  const value = sessionID?.trim() || null
+  return value === "__legacy_unbound__" ? null : value
 }
 
 function intentValues(intent: IntentReference | null | undefined): [string | null, string | null] {
@@ -196,7 +218,13 @@ export class ReviewStore {
         database.prepare("UPDATE reviews SET current_intent_type = ?, current_intent_ref = ?, updated_at = ? WHERE id = ?").run(intentType, intentRef, timestamp, stableReviewId)
         const previousRows = database.prepare("SELECT id, disposition, severity, category, title, body_markdown, wontfix, source_agents_json, content_hash FROM findings WHERE round_id = (SELECT id FROM review_rounds WHERE review_id = ? ORDER BY ordinal DESC LIMIT 1) AND disposition = 'ignored' ORDER BY ordinal").all(stableReviewId) as Array<Record<string, unknown>>
         const fencingToken = randomUUID()
-        database.prepare("INSERT INTO review_locks (review_id, fencing_token, acquired_at) VALUES (?, ?, ?)").run(stableReviewId, fencingToken, timestamp)
+        const sessionID = sessionValue(request.sessionID)
+        database.prepare("INSERT INTO review_locks (review_id, fencing_token, acquired_at, session_id) VALUES (?, ?, ?, ?)").run(
+          stableReviewId,
+          fencingToken,
+          timestamp,
+          sessionID ?? "__legacy_unbound__",
+        )
         database.exec("COMMIT")
         return {
           reviewId: stableReviewId,
@@ -233,21 +261,57 @@ export class ReviewStore {
       try {
         const payload = normalizeRoundPayload(request.validFindings, request.ignoredFindings, request.uncertainties)
         const payloadHash = hashRoundPayload(payload)
-        const existingRound = database.prepare("SELECT payload_hash FROM review_rounds WHERE id = ? AND review_id = ?").get(request.roundId, request.reviewId) as { payload_hash: string } | undefined
+        const existingRound = database.prepare("SELECT payload_hash, completed_session_id FROM review_rounds WHERE id = ? AND review_id = ?").get(request.roundId, request.reviewId) as {
+          payload_hash: string
+          completed_session_id: string | null
+        } | undefined
         if (existingRound) {
           if (existingRound.payload_hash !== payloadHash) throw new Error("round retry payload differs from the original")
-          const activeLock = database.prepare("SELECT fencing_token FROM review_locks WHERE review_id = ?").get(request.reviewId) as { fencing_token: string } | undefined
+          const requestSessionID = sessionValue(request.sessionID)
+          if (requestSessionID && existingRound.completed_session_id !== null && existingRound.completed_session_id !== requestSessionID) {
+            throw new Error("review lock session ownership mismatch")
+          }
+          const activeLock = database.prepare("SELECT fencing_token, session_id FROM review_locks WHERE review_id = ?").get(request.reviewId) as {
+            fencing_token: string
+            session_id: string
+          } | undefined
           if (activeLock && activeLock.fencing_token !== request.fencingToken) throw new Error("review lock fencing token is stale or missing")
+          if (requestSessionID && activeLock && activeLock.session_id !== "__legacy_unbound__" && activeLock.session_id !== requestSessionID) {
+            throw new Error("review lock session ownership mismatch")
+          }
+          if (requestSessionID && existingRound.completed_session_id === null) {
+            database.prepare("UPDATE review_rounds SET completed_session_id = ? WHERE id = ? AND review_id = ? AND completed_session_id IS NULL").run(
+              requestSessionID,
+              request.roundId,
+              request.reviewId,
+            )
+          }
+          if (requestSessionID) this.resolveMarkers(database, requestSessionID, request.reviewId, now())
           database.exec("COMMIT")
           return { roundId: request.roundId, idempotent: true }
         }
-        const lock = database.prepare("SELECT fencing_token FROM review_locks WHERE review_id = ?").get(request.reviewId) as { fencing_token: string } | undefined
+        const lock = database.prepare("SELECT fencing_token, session_id FROM review_locks WHERE review_id = ?").get(request.reviewId) as {
+          fencing_token: string
+          session_id: string
+        } | undefined
         if (!lock || lock.fencing_token !== request.fencingToken) throw new Error("review lock fencing token is stale or missing")
+        const requestSessionID = sessionValue(request.sessionID)
+        const isLegacyLock = lock.session_id === "__legacy_unbound__"
+        if (requestSessionID && !isLegacyLock && lock.session_id !== requestSessionID) throw new Error("review lock session ownership mismatch")
         const latest = database.prepare("SELECT COALESCE(MAX(ordinal), 0) AS ordinal FROM review_rounds WHERE review_id = ?").get(request.reviewId) as { ordinal: number }
         const ordinal = Number(latest.ordinal) + 1
         const [intentType, intentRef] = intentValues(request.intent)
         const completedAt = now()
-        database.prepare("INSERT INTO review_rounds (id, review_id, ordinal, payload_hash, intent_type, intent_ref, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?)").run(request.roundId, request.reviewId, ordinal, payloadHash, intentType, intentRef, completedAt)
+        database.prepare("INSERT INTO review_rounds (id, review_id, ordinal, payload_hash, intent_type, intent_ref, completed_at, completed_session_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(
+          request.roundId,
+          request.reviewId,
+          ordinal,
+          payloadHash,
+          intentType,
+          intentRef,
+          completedAt,
+          requestSessionID,
+        )
         const uncertaintyIds: number[] = []
         for (let index = 0; index < payload.uncertainties.length; index += 1) {
           const uncertainty = payload.uncertainties[index]
@@ -265,6 +329,7 @@ export class ReviewStore {
           }
         }
         database.prepare("DELETE FROM review_locks WHERE review_id = ? AND fencing_token = ?").run(request.reviewId, request.fencingToken)
+        if (requestSessionID) this.resolveMarkers(database, requestSessionID, request.reviewId, completedAt)
         database.exec("COMMIT")
         return { roundId: request.roundId, idempotent: false }
       } catch (error) {
@@ -309,9 +374,92 @@ export class ReviewStore {
 
   inspectLock(reviewId: string): LockInfo | undefined {
     return withDatabase(this.options, (database) => {
-      const row = database.prepare("SELECT review_id, fencing_token, acquired_at FROM review_locks WHERE review_id = ?").get(reviewId) as Record<string, unknown> | undefined
-      return row ? { reviewId: row.review_id as string, fencingToken: row.fencing_token as string, acquiredAt: row.acquired_at as string } : undefined
+      const row = database.prepare("SELECT review_id, fencing_token, acquired_at, session_id FROM review_locks WHERE review_id = ?").get(reviewId) as Record<string, unknown> | undefined
+      return row ? {
+        reviewId: row.review_id as string,
+        fencingToken: row.fencing_token as string,
+        acquiredAt: row.acquired_at as string,
+        ...(row.session_id === "__legacy_unbound__" ? {} : { sessionID: row.session_id as string }),
+      } : undefined
     })
+  }
+
+  hasActiveLockOwnedBySession(sessionID: string, reviewId?: string): boolean {
+    const owner = sessionValue(sessionID)
+    if (!owner) return false
+    return withDatabase(this.options, (database) => {
+      const row = reviewId === undefined
+        ? database.prepare("SELECT 1 AS present FROM review_locks WHERE session_id = ? LIMIT 1").get(owner)
+        : database.prepare("SELECT 1 AS present FROM review_locks WHERE review_id = ? AND session_id = ?").get(reviewId, owner)
+      return row !== undefined
+    })
+  }
+
+  activeReviewForSession(sessionID: string): { reviewId: string } | undefined {
+    const owner = sessionValue(sessionID)
+    if (!owner) return undefined
+    return withDatabase(this.options, (database) => {
+      const row = database.prepare("SELECT review_id FROM review_locks WHERE session_id = ? LIMIT 1").get(owner) as { review_id: string } | undefined
+      return row ? { reviewId: row.review_id } : undefined
+    })
+  }
+
+  recordIncompleteDiagnosticMarker(request: IncompleteDiagnosticMarkerRequest): IncompleteDiagnosticMarkerResult {
+    const sessionID = sessionValue(request.sessionID)
+    if (!sessionID) throw new Error("sessionID must be a non-empty string")
+    const markerKey = request.markerKey?.trim() || request.event
+    return withDatabase(this.options, (database) => {
+      database.exec("BEGIN IMMEDIATE")
+      try {
+        const existing = database.prepare("SELECT id, status FROM review_lifecycle_markers WHERE session_id = ? AND review_id = ? AND event = ? AND marker_key = ?").get(
+          sessionID,
+          request.reviewId,
+          request.event,
+          markerKey,
+        ) as { id: number; status: "open" | "resolved" } | undefined
+        if (existing?.status === "open") {
+          database.exec("COMMIT")
+          return { markerId: Number(existing.id), deduplicated: true }
+        }
+        const timestamp = now()
+        if (existing) {
+          database.prepare("UPDATE review_lifecycle_markers SET status = 'open', updated_at = ? WHERE id = ?").run(timestamp, existing.id)
+          database.exec("COMMIT")
+          return { markerId: Number(existing.id), deduplicated: false }
+        }
+        const result = database.prepare("INSERT INTO review_lifecycle_markers (session_id, review_id, event, marker_key, status, created_at, updated_at) VALUES (?, ?, ?, ?, 'open', ?, ?)").run(
+          sessionID,
+          request.reviewId,
+          request.event,
+          markerKey,
+          timestamp,
+          timestamp,
+        )
+        database.exec("COMMIT")
+        return { markerId: Number(result.lastInsertRowid), deduplicated: false }
+      } catch (error) {
+        try { database.exec("ROLLBACK") } catch { /* retain original error */ }
+        throw error
+      }
+    })
+  }
+
+  releaseIncompleteDiagnosticMarker(request: IncompleteDiagnosticMarkerRequest): boolean {
+    const owner = sessionValue(request.sessionID)
+    if (!owner) return false
+    const markerKey = request.markerKey?.trim() || request.event
+    return withDatabase(this.options, (database) => {
+      return database.prepare("DELETE FROM review_lifecycle_markers WHERE session_id = ? AND review_id = ? AND event = ? AND marker_key = ? AND status = 'open'").run(
+        owner,
+        request.reviewId,
+        request.event,
+        markerKey,
+      ).changes > 0
+    })
+  }
+
+  private resolveMarkers(database: SqliteDatabase, sessionID: string, reviewId: string, timestamp: string): void {
+    database.prepare("UPDATE review_lifecycle_markers SET status = 'resolved', updated_at = ? WHERE session_id = ? AND review_id = ? AND status = 'open'").run(timestamp, sessionID, reviewId)
   }
 
   unlock(reviewId: string, fencingToken: string): boolean {

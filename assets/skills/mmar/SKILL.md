@@ -1,11 +1,13 @@
 ---
 name: mmar
-description: Run MMAR (multi-model adversarial review) as a durable, scope-isolated code review. Use when the caller requests MMAR, multireview, or a multi-model adversarial review.
+description: Run MMAR (multi-model adversarial review) as a durable, scope-isolated code review. Use when the caller requests MMAR, multireview, or a multi-model adversarial review of a pull request, branch, commit, worktree, or custom changeset.
 ---
 
 # MMAR caller workflow
 
 Use this skill when the caller asks for an MMAR review. MMAR is a durable, scope-isolated review process; it is not a request to create or update a repository Markdown findings file.
+
+When the plugin is loaded, its bundled skill directory is added to OpenCode discovery automatically. A global or project skill installation is optional and is only a standalone/fallback copy for environments where the plugin is not loaded.
 
 ## Establish the scope
 
@@ -39,6 +41,8 @@ opencode-multireview unlock <review-id>
 
 Use `--force` only when the user explicitly confirms in a non-interactive environment. Never unlock speculatively. A stale orchestrator must not complete after its fencing token has been replaced.
 
+Ignore `session.idle` for abandonment diagnostics: OpenCode emits ordinary per-turn idle events even while background child sessions remain active, so idle alone is not evidence of an incomplete review. Only `session.error` triggers runtime incomplete-review diagnostics. Explicit lock recovery remains available through the command above.
+
 Source-resolution failure produces intent uncertainty. Independent specialists still run; report `partial` when at least one independent valid finding remains actionable and `blocked` when none does. Route uncertainty questions back to the caller and reuse the same scope/session for clarification rounds.
 
 ## Output boundary
@@ -50,3 +54,5 @@ opencode-multireview export <review-id> [--round <round-id>] [--output <path>]
 ```
 
 The SQLite history and plugin tools are the canonical persistence layer. The skill provides caller guidance only; it does not implement persistence.
+
+References to third-party `@multireview` packages or integrations remain outside this plugin and are not resolved or imported. The removed legacy `multireview*` agent and CLI aliases do not exist.
