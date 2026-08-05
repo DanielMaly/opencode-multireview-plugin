@@ -15,13 +15,13 @@ function manualGuidance(message) {
 }
 
 function sourceCheckoutFallback() {
-  manualGuidance("MMAR skill installation skipped (source checkout is not built; run npm run build first).")
+  manualGuidance("MMAR skill installation skipped (source checkout is not built; run npm run build first; plugin-loaded discovery is automatic).")
 }
 
 function runCompiledPostinstall() {
   const result = spawnSync(process.execPath, [compiledPostinstall], { stdio: "inherit" })
   if (result.error || result.status !== 0) {
-    manualGuidance("MMAR skill installation could not be completed.")
+    manualGuidance("MMAR skill installation could not be completed; plugin-loaded discovery remains automatic when the plugin is loaded.")
   }
 }
 

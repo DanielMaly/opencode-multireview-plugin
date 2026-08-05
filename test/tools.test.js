@@ -16,8 +16,8 @@ function gitProject(prefix) {
   return directory;
 }
 
-function context(directory, agent = "mmar_orchestrator") {
-  return { agent, directory, worktree: directory };
+function context(directory, agent = "mmar_orchestrator", sessionID = "session-a") {
+  return { agent, directory, worktree: directory, sessionID };
 }
 
 function beginArgs(intent, changeset = "review-scope") {
@@ -73,6 +73,36 @@ test("executes begin, cleanly reports contention, and omits locked round/token",
     assert.equal(Object.hasOwn(contention, "roundId"), false);
     assert.equal(Object.hasOwn(contention, "fencingToken"), false);
     assert.equal(contention.reviewId, first.reviewId);
+    assert.equal(new ReviewStore({ databasePath }).hasActiveLockOwnedBySession("session-a", first.reviewId), true);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("binds completion to the trusted session and does not authorize a contender", async () => {
+  const directory = gitProject("opencode-mmar-tool-session-");
+  const databasePath = join(directory, "reviews.sqlite");
+  const tools = createMmarTools({ databasePath });
+  try {
+    const first = parse(await tools.mmar_begin.execute(beginArgs(), context(directory, "mmar_orchestrator", "session-a")));
+    const contender = parse(await tools.mmar_begin.execute(beginArgs(), context(directory, "mmar_orchestrator", "session-b")));
+    assert.equal(contender.locked, true);
+    const lifecycle = new ReviewStore({ databasePath });
+    assert.equal(lifecycle.hasActiveLockOwnedBySession("session-a", first.reviewId), true);
+    assert.equal(lifecycle.hasActiveLockOwnedBySession("session-b", first.reviewId), false);
+    await assert.rejects(() => tools.mmar_complete.execute({
+      reviewId: first.reviewId,
+      roundId: first.roundId,
+      fencingToken: first.fencingToken,
+      validFindings: [validFinding()],
+    }, context(directory, "mmar_orchestrator", "session-b")), /session ownership/);
+    assert.deepEqual(await tools.mmar_complete.execute({
+      reviewId: first.reviewId,
+      roundId: first.roundId,
+      fencingToken: first.fencingToken,
+      validFindings: [validFinding()],
+    }, context(directory, "mmar_orchestrator", "session-a")).then(parse), { roundId: first.roundId, idempotent: false });
+    assert.equal(lifecycle.hasActiveLockOwnedBySession("session-a", first.reviewId), false);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -161,9 +191,9 @@ test("rejects malformed payloads and untrusted, empty, or out-of-worktree contex
     await assert.rejects(() => tools.mmar_begin.execute({ target: { kind: "custom" } }, context(directory)), /invalid|expected/i);
     await assert.rejects(() => tools.mmar_complete.execute({ reviewId: "not-an-id" }, context(directory)), /invalid|expected/i);
     await assert.rejects(() => tools.mmar_begin.execute(beginArgs(), context(directory, "mmar_correctness")), /only to mmar_orchestrator/);
-    await assert.rejects(() => tools.mmar_begin.execute(beginArgs(), { agent: "mmar_orchestrator", directory: "", worktree: "" }), /directory and worktree/);
-    await assert.rejects(() => tools.mmar_begin.execute(beginArgs(), { agent: "mmar_orchestrator", directory: outside, worktree: directory }), /outside/);
-    const nestedResult = parse(await tools.mmar_begin.execute(beginArgs(), { agent: "mmar_orchestrator", directory: nested, worktree: directory }));
+    await assert.rejects(() => tools.mmar_begin.execute(beginArgs(), { agent: "mmar_orchestrator", directory: "", worktree: "", sessionID: "session-a" }), /directory and worktree/);
+    await assert.rejects(() => tools.mmar_begin.execute(beginArgs(), { agent: "mmar_orchestrator", directory: outside, worktree: directory, sessionID: "session-a" }), /outside/);
+    const nestedResult = parse(await tools.mmar_begin.execute(beginArgs(), { agent: "mmar_orchestrator", directory: nested, worktree: directory, sessionID: "session-a" }));
     assert.equal(nestedResult.locked, false);
   } finally {
     rmSync(directory, { recursive: true, force: true });

@@ -73,6 +73,8 @@ function trustedWorktree(context: ToolContext): string {
   const directory = context.directory.trim()
   const worktree = context.worktree.trim()
   if (!directory || !worktree) throw new Error("MMAR tool context must include directory and worktree")
+  const sessionID = context.sessionID?.trim()
+  if (!sessionID || sessionID === "__legacy_unbound__") throw new Error("MMAR tool context must include a valid sessionID")
   const relativeDirectory = relative(canonicalPath(worktree), canonicalPath(directory))
   if (relativeDirectory === ".." || relativeDirectory.startsWith("../") || relativeDirectory.startsWith("..\\")) {
     throw new Error("MMAR tool directory is outside the trusted worktree")
@@ -102,7 +104,7 @@ export function createMmarTools(databaseOptions: DatabaseOptions = {}): Record<s
       const worktree = trustedWorktree(context)
       const identity = resolveReviewIdentity(worktree, input.baseRef)
       const target = normalizeTarget(input.target as TargetInput, identity)
-      const review = (await getStore()).begin({ identity, target, intent: input.intent ?? undefined })
+      const review = (await getStore()).begin({ identity, target, intent: input.intent ?? undefined, sessionID: context.sessionID })
       return json({
         ...review,
         requestScope: input.requestScope,
@@ -132,6 +134,7 @@ export function createMmarTools(databaseOptions: DatabaseOptions = {}): Record<s
         reviewId: input.reviewId,
         roundId: input.roundId,
         fencingToken: input.fencingToken,
+        sessionID: context.sessionID,
         intent: input.intent ?? undefined,
         validFindings: input.validFindings ?? [],
         ignoredFindings: input.ignoredFindings ?? [],

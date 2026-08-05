@@ -124,14 +124,18 @@ test("noninteractive postinstall skips mutation and prints manual guidance", () 
   rmSync(directory, { recursive: true, force: true })
 })
 
-test("TTY postinstall accepts the default and declines with n", async () => {
+test("TTY postinstall requires explicit opt-in and skips by default", async () => {
   const directory = temporaryDirectory()
   try {
     let installed = false
     await runPostinstall({ isTTY: true, ask: async () => "", install: () => { installed = true } })
-    assert.equal(installed, true)
+    assert.equal(installed, false)
 
     const messages = []
+    await runPostinstall({ isTTY: true, ask: async () => "y", install: () => { installed = true }, write: (message) => messages.push(message) })
+    assert.equal(installed, true)
+    assert.equal(messages.length, 0)
+
     await runPostinstall({ isTTY: true, ask: async () => "n", install: () => { throw new Error("must not install") }, write: (message) => messages.push(message) })
     assert.match(messages.join(""), /installation skipped/)
   } finally {

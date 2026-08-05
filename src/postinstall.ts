@@ -16,7 +16,7 @@ type PostinstallOptions = {
 function askForInstall(): Promise<string> {
   const readline = createInterface({ input: process.stdin, output: process.stdout })
   return new Promise<string>((resolveAnswer) => {
-    readline.question("Install skill (recommended)? [Y/n]", (answer) => {
+      readline.question("Install standalone skill copy (optional)? [y/N]", (answer) => {
       readline.close()
       resolveAnswer(answer)
     })
@@ -34,13 +34,13 @@ export async function runPostinstall(options: PostinstallOptions = {}): Promise<
   const write = options.write ?? ((message: string) => process.stdout.write(message))
   const isTTY = options.isTTY ?? Boolean(process.stdin.isTTY && process.stdout.isTTY)
   if (!isTTY) {
-    write(`MMAR skill installation skipped (non-interactive). Run: ${manualCommand}\n`)
+     write(`MMAR skill installation skipped (non-interactive; plugin-loaded discovery is automatic). Optional standalone fallback: ${manualCommand}\n`)
     return
   }
 
   const answer = await (options.ask ?? askForInstall)()
-  if (answer.trim().toLowerCase() === "n" || answer.trim().toLowerCase() === "no") {
-    write(`MMAR skill installation skipped. Run: ${manualCommand}\n`)
+   if (answer.trim().toLowerCase() !== "y" && answer.trim().toLowerCase() !== "yes") {
+     write(`MMAR skill installation skipped; plugin-loaded discovery is automatic. Optional standalone fallback: ${manualCommand}\n`)
     return
   }
 

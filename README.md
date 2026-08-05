@@ -6,10 +6,17 @@ Local-first MMAR (multi-model adversarial review) tooling for OpenCode. The plug
 
 ```bash
 npm install opencode-multireview-plugin
+```
+
+When the plugin is loaded by OpenCode, its bundled `assets/skills` directory is added to OpenCode's skill discovery automatically. No global or project skill copy is required.
+
+The installer is an optional standalone/fallback path. For a global copy:
+
+```bash
 opencode-multireview skill install --global
 ```
 
-The manual installer is recommended for project-local installs:
+For a project-local standalone copy:
 
 ```bash
 opencode-multireview skill install --project
@@ -17,7 +24,7 @@ opencode-multireview skill install --project
 
 The global skill is installed at `${XDG_CONFIG_HOME}/opencode/skills/mmar/SKILL.md` when `XDG_CONFIG_HOME` is set, otherwise at `~/.config/opencode/skills/mmar/SKILL.md`. Project installs go to `<project>/.opencode/skills/mmar/SKILL.md`. These are OpenCode-native paths; no `.claude` or `.agents` compatibility path is used.
 
-`npm install` asks `Install skill (recommended)? [Y/n]` only when both standard streams are TTYs. `n` skips. A non-interactive install succeeds without changing user configuration and prints the manual global install command. Use the manual command for repair or explicit project installation.
+`npm install` offers `Install standalone skill copy (optional)? [y/N]` only when both standard streams are TTYs. A non-interactive install succeeds without changing user configuration and prints the optional fallback command. Use the manual command only for standalone operation, repair, or explicit project installation.
 
 Each installed skill has a `.provenance.json` sidecar containing the package name, version, and content checksum. A missing copy is created; an unchanged plugin-owned older copy is updated; an unchanged current copy is left alone. A modified or unowned copy is preserved and never silently overwritten. `npm uninstall` therefore cannot silently remove user-owned or modified skill files.
 
@@ -30,6 +37,8 @@ Add the plugin to OpenCode configuration if it is not already loaded:
 ```
 
 Restart OpenCode after changing plugin configuration.
+
+References to third-party `@multireview` packages or integrations remain outside this plugin and are not resolved or imported. The removed legacy `multireview*` agent and CLI aliases do not exist.
 
 ## MMAR operations
 
@@ -44,6 +53,8 @@ opencode-multireview unlock <review-id>
 ```
 
 Use `--force` only after explicit confirmation in a non-interactive environment. Locks do not expire automatically, and fencing prevents a stale invocation from completing after recovery.
+
+Normal `session.idle` events are intentionally ignored: OpenCode emits them for ordinary per-turn idle, including while background child sessions remain active, so idle alone is not evidence that a review was abandoned. Runtime incomplete-review diagnostics use `session.error` only. Explicit lock recovery remains available through the command above.
 
 Agents never read or write `REVIEW_FINDINGS.md`, other agent Markdown, or git excludes. SQLite is canonical. Markdown is an explicit CLI projection only:
 
@@ -86,6 +97,8 @@ npm run typecheck
 npm test
 npm pack --dry-run
 ```
+
+The deterministic suite does not invoke a paid/live model. Live-model routing remains a manual verification limitation.
 
 ## Publishing
 

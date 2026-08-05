@@ -17,30 +17,32 @@ type AgentDefinition = {
 
 const AGENT_METADATA: Record<ReviewerKey, { description: string; mode: AgentMode; promptFile: string }> = {
   coordinator: {
-    description: "Principal Engineer Coordinator for adversarial, multi-model code review.",
+    description:
+      "Principal Engineer Coordinator for MMAR, multireview, and multi-model adversarial reviews of pull requests, branches, commits, uncommitted worktrees, and custom changesets.",
     mode: "all",
     promptFile: "mmar_orchestrator.md",
   },
   codestyle: {
     description:
-      "Senior Engineer focused exclusively on code style and readability review. Use when the user wants a style-only code review, linting feedback, naming feedback, or wants to know if their code follows conventions and clean code principles.",
+      "Internal MMAR specialist lane focused exclusively on code style and readability review. Use for style-only review, linting feedback, naming feedback, or convention and clean-code questions; return results to the orchestrator and never initiate persistence.",
     mode: "subagent",
     promptFile: "mmar_codestyle.md",
   },
   correctness: {
     description:
-      "Senior Engineer focused exclusively on correctness and security code review — covering logic soundness, edge cases, error handling, concurrency, performance, and OWASP Top 10 vulnerabilities. Use when the user wants a correctness-only or security-only review, wants to find bugs, race conditions, unhandled errors, or security vulnerabilities, or explicitly wants to exclude style/readability feedback.",
+      "Internal MMAR specialist lane focused exclusively on correctness and security code review — covering logic soundness, edge cases, error handling, concurrency, performance, and OWASP Top 10 vulnerabilities. Return results to the orchestrator and never initiate persistence.",
     mode: "subagent",
     promptFile: "mmar_correctness.md",
   },
   testing: {
     description:
-      "Senior Engineer focused exclusively on test coverage review. Use when the user wants to review test coverage for a changeset, wants to know if their unit tests are sufficient, or wants to identify gaps in testing for new or modified code paths.",
+      "Internal MMAR specialist lane focused exclusively on test coverage review. Identify gaps in tests for changed code paths, return results to the orchestrator, and never initiate persistence.",
     mode: "subagent",
     promptFile: "mmar_testing.md",
   },
   intent: {
-    description: "Senior Engineer focused exclusively on conformance to caller-supplied plans, specifications, tickets, and decisions.",
+    description:
+      "Internal MMAR specialist lane focused exclusively on conformance to caller-supplied plans, specifications, tickets, and decisions. Return results to the orchestrator and never initiate persistence.",
     mode: "subagent",
     promptFile: "mmar_intent.md",
   },
