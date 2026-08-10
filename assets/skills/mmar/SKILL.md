@@ -7,7 +7,7 @@ description: Run MMAR (multi-model adversarial review) as a durable, scope-isola
 
 Use this skill when the caller asks for an MMAR review. MMAR is a durable, scope-isolated review process; it is not a request to create or update a repository Markdown findings file.
 
-For requests to discover prior MMAR runs or retrieve historical findings, delegate to `mmar_orchestrator` and have it call `mmar_list_reviews` and `mmar_get_findings` directly. Do not start a new review for a retrieval request. The tools return structured JSON from the trusted repository/worktree scope.
+For requests to discover prior MMAR runs or retrieve historical findings, delegate to `mmar_orchestrator` and have it call `mmar_list_reviews` and `mmar_get_findings` directly. Do not start a new review for a retrieval request. Omit `worktreePath` for the current session worktree; when the requested scope is another local worktree, pass its exact absolute Git worktree root to both read tools. This intentionally widens model-facing read access beyond the OpenCode session root, while granting no database-path selection, SQL, writes, lock ownership, fencing credentials, `mmar_begin`, or `mmar_complete` authority. Explicit non-Git paths are unsupported, and uncommitted reviews remain isolated to the exact selected worktree.
 
 When the plugin is loaded, its bundled skill directory is added to OpenCode discovery automatically. A global or project skill installation is optional and is only a standalone/fallback copy for environments where the plugin is not loaded.
 
@@ -29,7 +29,7 @@ An intent source is optional. A Jira key or URL must be retrieved through the ca
 
 Call and retain the same `mmar_orchestrator` session for repeated work with the same project, target, and resolved base whenever the caller still has that session context. A different target or base is a different scope: start a new orchestrator session and do not carry findings between scopes.
 
-The orchestrator must call `mmar_begin` before inspecting the changeset or spawning specialists. It must pass the required base ref, target, request scope, and typed intent reference. A successful begin returns a review ID, round ID, fencing token, and any prior ignored entries for revalidation. Prior ignored entries are candidates only; verify them against the current changeset and omit stale entries.
+The orchestrator must call `mmar_begin` before inspecting the changeset or spawning specialists. It must pass the required base ref, target, request scope, and typed intent reference. A successful begin returns a review ID, round ID, fencing token, and any prior ignored entries for revalidation. Prior ignored entries are candidates only; verify them against the current changeset and omit stale entries. `mmar_begin` and `mmar_complete` remain contained to the trusted current session worktree and do not accept `worktreePath`.
 
 ## Lock and failure behavior
 

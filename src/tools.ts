@@ -1,7 +1,7 @@
-import { realpathSync } from "node:fs"
-import { relative, resolve } from "node:path"
+import { realpathSync, statSync } from "node:fs"
+import { isAbsolute, relative, resolve } from "node:path"
 import { tool, type ToolContext, type ToolDefinition } from "@opencode-ai/plugin"
-import { normalizeTarget, resolveRepositoryIdentity, resolveReviewIdentity, type TargetInput } from "./repository.js"
+import { normalizeTarget, resolveRepositoryIdentity, resolveReviewIdentity, type RepositoryIdentity, type TargetInput } from "./repository.js"
 import type { DatabaseOptions } from "./storage/database.js"
 import type { ReviewStore } from "./storage/reviews.js"
 
@@ -60,11 +60,14 @@ const completeArgsSchema = z.object({
   uncertainties: z.array(uncertaintySchema).optional(),
 }).strict()
 
-const listReviewsArgsSchema = z.object({}).strict()
+const listReviewsArgsSchema = z.object({
+  worktreePath: z.string().trim().min(1).optional(),
+}).strict()
 
 const getFindingsArgsSchema = z.object({
   reviewId: idSchema,
   roundId: idSchema.optional(),
+  worktreePath: z.string().trim().min(1).optional(),
 }).strict()
 
 function canonicalPath(path: string): string {
@@ -76,17 +79,55 @@ function canonicalPath(path: string): string {
 }
 
 function trustedWorktree(context: ToolContext): string {
+  validateMmarContext(context)
+  const directory = context.directory.trim()
+  const worktree = context.worktree.trim()
+  const relativeDirectory = relative(canonicalPath(worktree), canonicalPath(directory))
+  if (relativeDirectory === ".." || relativeDirectory.startsWith("../") || relativeDirectory.startsWith("..\\")) {
+    throw new Error("MMAR tool directory is outside the trusted worktree")
+  }
+  return canonicalPath(worktree)
+}
+
+function validateMmarContext(context: ToolContext): void {
   if (context.agent !== "mmar_orchestrator") throw new Error("MMAR tools are available only to mmar_orchestrator")
   const directory = context.directory.trim()
   const worktree = context.worktree.trim()
   if (!directory || !worktree) throw new Error("MMAR tool context must include directory and worktree")
   const sessionID = context.sessionID?.trim()
   if (!sessionID || sessionID === "__legacy_unbound__") throw new Error("MMAR tool context must include a valid sessionID")
-  const relativeDirectory = relative(canonicalPath(worktree), canonicalPath(directory))
-  if (relativeDirectory === ".." || relativeDirectory.startsWith("../") || relativeDirectory.startsWith("..\\")) {
-    throw new Error("MMAR tool directory is outside the trusted worktree")
+}
+
+function explicitWorktree(path: string): RepositoryIdentity {
+  if (!isAbsolute(path)) throw new Error("MMAR worktreePath must be an absolute path")
+  let stats: ReturnType<typeof statSync>
+  try {
+    stats = statSync(path)
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    if (code === "ENOENT") throw new Error(`MMAR worktreePath does not exist: ${path}`, { cause: error })
+    throw new Error(`MMAR worktreePath cannot be accessed: ${path}`, { cause: error })
   }
-  return canonicalPath(worktree)
+  if (!stats.isDirectory()) throw new Error(`MMAR worktreePath is not a directory: ${path}`)
+  let canonical: string
+  try {
+    canonical = realpathSync.native(path)
+  } catch (error) {
+    throw new Error(`MMAR worktreePath could not be canonicalized: ${path}`, { cause: error })
+  }
+  const repository = resolveRepositoryIdentity(canonical)
+  if (!repository.isGit) throw new Error(`MMAR worktreePath is not a Git repository or worktree: ${canonical}`)
+  if (repository.rootPath !== canonical) throw new Error(`MMAR worktreePath must be the Git worktree root: ${canonical}`)
+  return repository
+}
+
+function readWorktree(context: ToolContext, worktreePath: string | undefined): RepositoryIdentity {
+  if (worktreePath === undefined) {
+    const path = trustedWorktree(context)
+    return resolveRepositoryIdentity(path)
+  }
+  validateMmarContext(context)
+  return explicitWorktree(worktreePath)
 }
 
 function json(value: unknown): string {
@@ -152,23 +193,21 @@ export function createMmarTools(databaseOptions: DatabaseOptions = {}): Record<s
   })
 
   const listReviews = tool({
-    description: "List completed and in-progress MMAR reviews for the trusted current worktree.",
+    description: "List completed and in-progress MMAR reviews for the current worktree, or an explicit absolute local Git worktree root. Explicit paths intentionally widen model-facing read access beyond the OpenCode session root; no write or lock authority is granted.",
     args: listReviewsArgsSchema.shape,
     async execute(args, context) {
-      listReviewsArgsSchema.parse(args)
-      const worktree = trustedWorktree(context)
-      const repository = resolveRepositoryIdentity(worktree)
+      const input = listReviewsArgsSchema.parse(args)
+      const repository = readWorktree(context, input.worktreePath)
       return json((await getStore()).listScoped(repository))
     },
   })
 
   const getFindings = tool({
-    description: "Retrieve a completed MMAR review round from the trusted current worktree.",
+    description: "Retrieve a completed MMAR review round from the current worktree, or an explicit absolute local Git worktree root. Explicit paths intentionally widen model-facing read access beyond the OpenCode session root; no write or lock authority is granted.",
     args: getFindingsArgsSchema.shape,
     async execute(args, context) {
       const input = getFindingsArgsSchema.parse(args)
-      const worktree = trustedWorktree(context)
-      const repository = resolveRepositoryIdentity(worktree)
+      const repository = readWorktree(context, input.worktreePath)
       const reviewStore = await getStore()
       reviewStore.assertReviewScope(input.reviewId, repository)
       const round = reviewStore.getRound(input.reviewId, input.roundId)

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, mkdirSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
@@ -51,8 +51,10 @@ test("exposes exactly four tools and no model-controlled database or session arg
   assert.deepEqual(Object.keys(mmarTools.mmar_complete.args).sort(), [
     "fencingToken", "ignoredFindings", "intent", "reviewId", "roundId", "uncertainties", "validFindings",
   ]);
-  assert.deepEqual(Object.keys(mmarTools.mmar_list_reviews.args), []);
-  assert.deepEqual(Object.keys(mmarTools.mmar_get_findings.args).sort(), ["reviewId", "roundId"]);
+  assert.deepEqual(Object.keys(mmarTools.mmar_list_reviews.args), ["worktreePath"]);
+  assert.deepEqual(Object.keys(mmarTools.mmar_get_findings.args).sort(), ["reviewId", "roundId", "worktreePath"]);
+  assert.equal(Object.hasOwn(mmarTools.mmar_begin.args, "worktreePath"), false);
+  assert.equal(Object.hasOwn(mmarTools.mmar_complete.args, "worktreePath"), false);
   for (const args of [mmarTools.mmar_begin.args, mmarTools.mmar_complete.args, mmarTools.mmar_list_reviews.args, mmarTools.mmar_get_findings.args]) {
     for (const forbidden of ["databasePath", "sql", "shell", "sessionId", "sessionID", "intentContent"]) {
       assert.equal(Object.hasOwn(args, forbidden), false);
@@ -80,31 +82,78 @@ test("lists scoped reviews and retrieves latest or exact completed findings with
     assert.equal(listed.length, 1);
     assert.equal(listed[0].id, first.reviewId);
     assert.equal(listed[0].latestRoundId, second.roundId);
-    const latest = parse(await tools.mmar_get_findings.execute({ reviewId: first.reviewId }, context(otherWorktree)));
+    const latest = parse(await tools.mmar_get_findings.execute({ reviewId: first.reviewId, worktreePath: projectA }, context(otherWorktree)));
     assert.equal(latest.id, second.roundId);
     assert.equal(latest.validFindings[0].title, "Latest round");
-    const exact = parse(await tools.mmar_get_findings.execute({ reviewId: first.reviewId, roundId: first.roundId }, context(projectA)));
+    const exact = parse(await tools.mmar_get_findings.execute({ reviewId: first.reviewId, roundId: first.roundId, worktreePath: projectA }, context(projectB)));
     assert.equal(exact.id, first.roundId);
     assert.equal(exact.validFindings[0].title, "First round");
     assert.equal(new ReviewStore({ databasePath }).inspectLock(first.reviewId), undefined);
 
     const locked = parse(await tools.mmar_begin.execute(beginArgs(undefined, "history"), context(projectA)));
-    const lockedListing = parse(await tools.mmar_list_reviews.execute({}, context(projectA)));
+    const lockedListing = parse(await tools.mmar_list_reviews.execute({ worktreePath: projectA }, context(projectB)));
     const lockedSummary = lockedListing.find(({ id }) => id === locked.reviewId);
     assert.equal(lockedSummary.lock.acquiredAt, locked.acquiredAt);
     assert.equal(Object.hasOwn(lockedSummary.lock, "fencingToken"), false);
-    const lockedFindings = parse(await tools.mmar_get_findings.execute({ reviewId: locked.reviewId }, context(projectA)));
+    const lockedFindings = parse(await tools.mmar_get_findings.execute({ reviewId: locked.reviewId, worktreePath: projectA }, context(projectB)));
     assert.equal(lockedFindings.id, second.roundId);
-    assert.deepEqual(parse(await tools.mmar_list_reviews.execute({}, context(projectB))), []);
+    assert.deepEqual(parse(await tools.mmar_list_reviews.execute({ worktreePath: projectB }, context(projectA))), []);
 
     const uncommitted = parse(await tools.mmar_begin.execute({ ...beginArgs(), target: { kind: "uncommitted" } }, context(projectA)));
     assert.equal(parse(await tools.mmar_list_reviews.execute({}, context(otherWorktree))).some(({ id }) => id === uncommitted.reviewId), false);
     await assert.rejects(() => tools.mmar_get_findings.execute({ reviewId: uncommitted.reviewId }, context(otherWorktree)), /trusted worktree scope/);
+    await tools.mmar_complete.execute({ reviewId: uncommitted.reviewId, roundId: uncommitted.roundId, fencingToken: uncommitted.fencingToken, validFindings: [validFinding("Uncommitted")] }, context(projectA));
+    const selectedUncommitted = parse(await tools.mmar_get_findings.execute({ reviewId: uncommitted.reviewId, worktreePath: projectA }, context(otherWorktree)));
+    assert.equal(selectedUncommitted.validFindings[0].title, "Uncommitted");
+    assert.equal(parse(await tools.mmar_list_reviews.execute({ worktreePath: projectA }, context(otherWorktree))).some(({ id }) => id === uncommitted.reviewId), true);
+    await assert.rejects(() => tools.mmar_get_findings.execute({ reviewId: uncommitted.reviewId, worktreePath: otherWorktree }, context(projectA)), /trusted worktree scope/);
+    assert.equal(parse(await tools.mmar_list_reviews.execute({ worktreePath: otherWorktree }, context(projectA))).some(({ id }) => id === uncommitted.reviewId), false);
   } finally {
     execFileSync("git", ["-C", projectA, "worktree", "remove", "--force", otherWorktree]);
     rmSync(projectA, { recursive: true, force: true });
     rmSync(projectB, { recursive: true, force: true });
     rmSync(worktreeParent, { recursive: true, force: true });
+  }
+});
+
+test("allows explicit reads outside context containment and resolves symlinked and linked worktree roots", async () => {
+  const project = gitProject("opencode-mmar-tool-explicit-roots-");
+  const worktreeParent = mkdtempSync(join(tmpdir(), "opencode-mmar-tool-explicit-worktrees-"));
+  const linked = join(worktreeParent, "linked");
+  const symlink = join(worktreeParent, "linked-alias");
+  const outside = mkdtempSync(join(tmpdir(), "opencode-mmar-tool-explicit-context-"));
+  const databasePath = join(mkdtempSync(join(tmpdir(), "opencode-mmar-tool-explicit-db-")), "reviews.sqlite");
+  execFileSync("git", ["-C", project, "worktree", "add", "-q", "--detach", linked, "HEAD"]);
+  symlinkSync(linked, symlink, "dir");
+  const tools = createMmarTools({ databasePath });
+  try {
+    const linkedContext = { ...context(project), directory: outside };
+    const begun = parse(await tools.mmar_begin.execute(beginArgs(undefined, "linked-history"), context(linked)));
+    await tools.mmar_complete.execute({
+      reviewId: begun.reviewId,
+      roundId: begun.roundId,
+      fencingToken: begun.fencingToken,
+      validFindings: [validFinding("Linked worktree")],
+    }, context(linked));
+
+    const listed = parse(await tools.mmar_list_reviews.execute({ worktreePath: symlink }, linkedContext));
+    assert.equal(listed.some(({ id }) => id === begun.reviewId), true);
+    const round = parse(await tools.mmar_get_findings.execute({ reviewId: begun.reviewId, worktreePath: linked }, linkedContext));
+    assert.equal(round.validFindings[0].title, "Linked worktree");
+
+    await assert.rejects(
+      () => tools.mmar_list_reviews.execute({ worktreePath: linked }, { ...linkedContext, agent: "mmar_testing" }),
+      /only to mmar_orchestrator/,
+    );
+    await assert.rejects(
+      () => tools.mmar_get_findings.execute({ reviewId: begun.reviewId, worktreePath: linked }, { ...linkedContext, sessionID: "__legacy_unbound__" }),
+      /valid sessionID/,
+    );
+  } finally {
+    execFileSync("git", ["-C", project, "worktree", "remove", "--force", linked]);
+    rmSync(project, { recursive: true, force: true });
+    rmSync(worktreeParent, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
   }
 });
 
@@ -219,6 +268,10 @@ test("rejects invalid and out-of-scope retrievals with explicit completed-round 
   const projectA = gitProject("opencode-mmar-tool-read-errors-a-");
   const projectB = gitProject("opencode-mmar-tool-read-errors-b-");
   const outside = mkdtempSync(join(tmpdir(), "opencode-mmar-tool-read-errors-outside-"));
+  const file = join(outside, "file");
+  const nested = join(projectA, "nested");
+  mkdirSync(nested);
+  writeFileSync(file, "not a directory");
   const tools = createMmarTools({ databasePath: join(mkdtempSync(join(tmpdir(), "opencode-mmar-tool-read-errors-db-")), "reviews.sqlite") });
   try {
     const pending = parse(await tools.mmar_begin.execute(beginArgs(undefined, "pending"), context(projectA)));
@@ -249,6 +302,23 @@ test("rejects invalid and out-of-scope retrievals with explicit completed-round 
     await assert.rejects(() => tools.mmar_get_findings.execute({ reviewId: pending.reviewId }, context(projectB)), /project scope/);
     await assert.rejects(() => tools.mmar_list_reviews.execute({}, { ...context(projectA), directory: outside }), /outside/);
     await assert.rejects(() => tools.mmar_get_findings.execute({ reviewId: pending.reviewId }, { ...context(projectA), directory: outside }), /outside/);
+    await assert.rejects(() => tools.mmar_list_reviews.execute({ worktreePath: "relative/path" }, context(projectA)), /absolute/);
+    await assert.rejects(() => tools.mmar_get_findings.execute({ reviewId: pending.reviewId, worktreePath: "relative/path" }, context(projectA)), /absolute/);
+    await assert.rejects(() => tools.mmar_list_reviews.execute({ worktreePath: join(outside, "missing") }, context(projectA)), /does not exist/);
+    await assert.rejects(() => tools.mmar_get_findings.execute({ reviewId: pending.reviewId, worktreePath: `${outside}\0` }, context(projectA)), /cannot be accessed/);
+    await assert.rejects(() => tools.mmar_list_reviews.execute({ worktreePath: file }, context(projectA)), /not a directory/);
+    await assert.rejects(() => tools.mmar_get_findings.execute({ reviewId: pending.reviewId, worktreePath: nested }, context(projectA)), /MMAR worktreePath must be the Git worktree root: /);
+    await assert.rejects(() => tools.mmar_list_reviews.execute({ worktreePath: outside }, context(projectA)), /MMAR worktreePath is not a Git repository or worktree: /);
+    for (const execute of [
+      () => tools.mmar_list_reviews.execute({ worktreePath: projectA }, context(projectA, "mmar_correctness")),
+      () => tools.mmar_get_findings.execute({ reviewId: pending.reviewId, worktreePath: projectA }, context(projectA, "mmar_correctness")),
+    ]) await assert.rejects(execute, /only to mmar_orchestrator/);
+    for (const sessionID of [undefined, "__legacy_unbound__"]) {
+      for (const execute of [
+        () => tools.mmar_list_reviews.execute({ worktreePath: projectA }, { ...context(projectA), sessionID }),
+        () => tools.mmar_get_findings.execute({ reviewId: pending.reviewId, worktreePath: projectA }, { ...context(projectA), sessionID }),
+      ]) await assert.rejects(execute, /valid sessionID/);
+    }
   } finally {
     rmSync(projectA, { recursive: true, force: true });
     rmSync(projectB, { recursive: true, force: true });
@@ -388,7 +458,9 @@ test("rejects malformed payloads and untrusted, empty, or out-of-worktree contex
   const tools = createMmarTools({ databasePath: join(directory, "reviews.sqlite") });
   try {
     await assert.rejects(() => tools.mmar_begin.execute({ target: { kind: "custom" } }, context(directory)), /invalid|expected/i);
+    await assert.rejects(() => tools.mmar_begin.execute({ ...beginArgs(), worktreePath: directory }, context(directory)), /unrecognized|unknown|invalid/i);
     await assert.rejects(() => tools.mmar_complete.execute({ reviewId: "not-an-id" }, context(directory)), /invalid|expected/i);
+    await assert.rejects(() => tools.mmar_complete.execute({ reviewId: "00000000-0000-0000-0000-000000000000", roundId: "00000000-0000-0000-0000-000000000000", fencingToken: "00000000-0000-0000-0000-000000000000", worktreePath: directory }, context(directory)), /unrecognized|unknown|invalid/i);
     await assert.rejects(() => tools.mmar_begin.execute(beginArgs(), context(directory, "mmar_correctness")), /only to mmar_orchestrator/);
     await assert.rejects(() => tools.mmar_begin.execute(beginArgs(), { agent: "mmar_orchestrator", directory: "", worktree: "", sessionID: "session-a" }), /directory and worktree/);
     await assert.rejects(() => tools.mmar_begin.execute(beginArgs(), { agent: "mmar_orchestrator", directory: outside, worktree: directory, sessionID: "session-a" }), /outside/);
