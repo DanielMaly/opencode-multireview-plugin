@@ -1,5 +1,10 @@
 # Changelog
 
+## [v1.0.0-1](https://github.com/DanielMaly/opencode-multireview-plugin/compare/v1.0.0-0...v1.0.0-1) (2026-07-27)
+
+- Fix publishing [`1f2d942`](https://github.com/DanielMaly/opencode-multireview-plugin/commit/1f2d942c0f247260ea910fbd72b104ae8c4a98de)
+- Release v1.0.0-1 [`0646789`](https://github.com/DanielMaly/opencode-multireview-plugin/commit/0646789d63d505375efb8340dcc09d26bad7cec9)
+
 ## [v1.0.0-0](https://github.com/DanielMaly/opencode-multireview-plugin/compare/v0.4.0...v1.0.0-0) (2026-07-27)
 
 - Fix interactive unlock test hang [`#12`](https://github.com/DanielMaly/opencode-multireview-plugin/pull/12)
