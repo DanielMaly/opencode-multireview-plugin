@@ -60,6 +60,13 @@ const completeArgsSchema = z.object({
   uncertainties: z.array(uncertaintySchema).optional(),
 }).strict()
 
+const listReviewsArgsSchema = z.object({}).strict()
+
+const getFindingsArgsSchema = z.object({
+  reviewId: idSchema,
+  roundId: idSchema.optional(),
+}).strict()
+
 function canonicalPath(path: string): string {
   try {
     return realpathSync.native(path)
@@ -69,7 +76,7 @@ function canonicalPath(path: string): string {
 }
 
 function trustedWorktree(context: ToolContext): string {
-  if (context.agent !== "mmar_orchestrator") throw new Error("MMAR persistence tools are available only to mmar_orchestrator")
+  if (context.agent !== "mmar_orchestrator") throw new Error("MMAR tools are available only to mmar_orchestrator")
   const directory = context.directory.trim()
   const worktree = context.worktree.trim()
   if (!directory || !worktree) throw new Error("MMAR tool context must include directory and worktree")
@@ -144,9 +151,40 @@ export function createMmarTools(databaseOptions: DatabaseOptions = {}): Record<s
     },
   })
 
+  const listReviews = tool({
+    description: "List completed and in-progress MMAR reviews for the trusted current worktree.",
+    args: listReviewsArgsSchema.shape,
+    async execute(args, context) {
+      listReviewsArgsSchema.parse(args)
+      const worktree = trustedWorktree(context)
+      const repository = resolveRepositoryIdentity(worktree)
+      return json((await getStore()).listScoped(repository))
+    },
+  })
+
+  const getFindings = tool({
+    description: "Retrieve a completed MMAR review round from the trusted current worktree.",
+    args: getFindingsArgsSchema.shape,
+    async execute(args, context) {
+      const input = getFindingsArgsSchema.parse(args)
+      const worktree = trustedWorktree(context)
+      const repository = resolveRepositoryIdentity(worktree)
+      const reviewStore = await getStore()
+      reviewStore.assertReviewScope(input.reviewId, repository)
+      const round = reviewStore.getRound(input.reviewId, input.roundId)
+      if (!round) {
+        if (input.roundId) throw new Error(`Unknown round ${input.roundId} for review ${input.reviewId}`)
+        throw new Error(`Review ${input.reviewId} has no completed rounds`)
+      }
+      return json(round)
+    },
+  })
+
   return {
     mmar_begin: begin,
     mmar_complete: complete,
+    mmar_list_reviews: listReviews,
+    mmar_get_findings: getFindings,
   }
 }
 

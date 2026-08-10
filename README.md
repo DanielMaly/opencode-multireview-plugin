@@ -44,6 +44,8 @@ References to third-party `@multireview` packages or integrations remain outside
 
 The `mmar` skill is the review entrypoint. It normalizes a target (pull request, branch, commit, uncommitted worktree, or custom changeset), requires and resolves a base ref, and then delegates compact scope metadata to `mmar_orchestrator`.
 
+For historical discovery or findings retrieval, delegate to `mmar_orchestrator`, which uses the read-only `mmar_list_reviews` and `mmar_get_findings` tools directly. They return structured JSON scoped to the trusted repository/worktree without starting a new review; listing includes lock acquisition metadata but never fencing tokens. The CLI remains the human-facing Markdown/history interface.
+
 An optional Jira key/URL is resolved through the caller's authenticated Jira integration. An explicit local intent path is read exactly as supplied. Successful content is passed to the intent agent, but only the normalized reference is persisted. Failed resolution passes the reference and concise error, still launches `mmar_intent`, and produces intent uncertainty; it never invents content or silently becomes a no-intent review.
 
 The same project/target/resolved-base scope can reuse the orchestrator session across caller sessions. A different target or base starts a new scope and cannot inherit unrelated findings. `mmar_begin` runs before diff inspection or specialist spawning. Lock contention reports the active review and exits without spawning specialists. If orchestration fails after acquisition, inspect the lock and ask before recovery:

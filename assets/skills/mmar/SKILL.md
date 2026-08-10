@@ -7,6 +7,8 @@ description: Run MMAR (multi-model adversarial review) as a durable, scope-isola
 
 Use this skill when the caller asks for an MMAR review. MMAR is a durable, scope-isolated review process; it is not a request to create or update a repository Markdown findings file.
 
+For requests to discover prior MMAR runs or retrieve historical findings, delegate to `mmar_orchestrator` and have it call `mmar_list_reviews` and `mmar_get_findings` directly. Do not start a new review for a retrieval request. The tools return structured JSON from the trusted repository/worktree scope.
+
 When the plugin is loaded, its bundled skill directory is added to OpenCode discovery automatically. A global or project skill installation is optional and is only a standalone/fallback copy for environments where the plugin is not loaded.
 
 ## Establish the scope
@@ -47,7 +49,7 @@ Source-resolution failure produces intent uncertainty. Independent specialists s
 
 ## Output boundary
 
-Agents must not create, read, modify, or use `REVIEW_FINDINGS.md`, other agent Markdown files, or git excludes. Only explicit CLI output may create a Markdown projection:
+Agents must not create, read, modify, or use `REVIEW_FINDINGS.md`, other agent Markdown files, or git excludes. Only explicit CLI output may create a Markdown projection. The CLI remains the human-facing Markdown/history interface; agents should use the orchestrator read tools for structured historical retrieval:
 
 ```bash
 opencode-multireview export <review-id> [--round <round-id>] [--output <path>]

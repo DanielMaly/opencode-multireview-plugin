@@ -68,6 +68,10 @@ export interface ReviewSummary {
   lock?: { fencingToken: string; acquiredAt: string }
 }
 
+export type ScopedReviewSummary = Omit<ReviewSummary, "lock"> & {
+  lock?: { acquiredAt: string }
+}
+
 export interface LockInfo {
   reviewId: string
   fencingToken: string
@@ -139,8 +143,9 @@ export class ReviewStore {
         const identity = request.identity
         const project = database.prepare("SELECT id FROM projects WHERE project_key = ?").get(identity.projectKey) as { id: number } | undefined
         const existing = project
-          ? database.prepare("SELECT id FROM reviews WHERE project_id = ? AND target_key = ? AND base_commit = ?").get(project.id, request.target.key, identity.baseCommit) as { id: string } | undefined
+          ? database.prepare("SELECT id, target_kind FROM reviews WHERE project_id = ? AND target_key = ? AND base_commit = ?").get(project.id, request.target.key, identity.baseCommit) as { id: string; target_kind: string } | undefined
           : undefined
+        if (existing && existing.target_kind !== request.target.kind) throw new Error("review target kind does not match existing review identity")
         const stableReviewId = existing?.id ?? newReviewId()
         const lock = existing
           ? database.prepare("SELECT fencing_token, acquired_at FROM review_locks WHERE review_id = ?").get(existing.id) as { fencing_token: string; acquired_at: string } | undefined
@@ -340,20 +345,41 @@ export class ReviewStore {
   }
 
   list(projectKey?: string): ReviewSummary[] {
-    return withDatabase(this.options, (database) => database.prepare("SELECT r.id, r.target_kind, r.target_key, r.target_label, r.base_ref, r.base_commit, r.current_intent_type, r.current_intent_ref, rr.id AS latest_round_id, rr.completed_at AS latest_round_at, rl.fencing_token, rl.acquired_at FROM reviews r LEFT JOIN review_rounds rr ON rr.review_id = r.id AND rr.ordinal = (SELECT MAX(ordinal) FROM review_rounds WHERE review_id = r.id) LEFT JOIN review_locks rl ON rl.review_id = r.id WHERE (? IS NULL OR r.project_id = (SELECT id FROM projects WHERE project_key = ?)) ORDER BY r.project_id, r.target_kind, r.target_key, r.base_commit").all(projectKey ?? null, projectKey ?? null).map((row) => {
-      const value = row as Record<string, unknown>
-      return {
-        id: value.id as string,
-        targetKind: value.target_kind as string,
-        targetKey: value.target_key as string,
-        targetLabel: value.target_label as string,
-        baseRef: value.base_ref as string,
-        baseCommit: value.base_commit as string,
-        ...(value.current_intent_type === null ? {} : { currentIntentType: value.current_intent_type as string, currentIntentRef: value.current_intent_ref as string }),
-        ...(value.latest_round_id === null ? {} : { latestRoundId: value.latest_round_id as string, latestRoundAt: value.latest_round_at as string }),
-        ...(value.fencing_token === null ? {} : { lock: { fencingToken: value.fencing_token as string, acquiredAt: value.acquired_at as string } }),
-      }
-    }))
+    return withDatabase(this.options, (database) => this.summaryRows(database, { projectKey }).map((row) => this.summary(row)))
+  }
+
+  listScoped(scope: ReviewScope): ScopedReviewSummary[] {
+    return withDatabase(this.options, (database) => this.summaryRows(database, scope).map((row) => this.scopedSummary(row)))
+  }
+
+  private summaryRows(database: SqliteDatabase, scope: { projectKey?: string; worktreePath?: string }): Array<Record<string, unknown>> {
+    return database.prepare("SELECT r.id, r.target_kind, r.target_key, r.target_label, r.base_ref, r.base_commit, r.current_intent_type, r.current_intent_ref, rr.id AS latest_round_id, rr.completed_at AS latest_round_at, rl.fencing_token, rl.acquired_at FROM reviews r JOIN projects p ON p.id = r.project_id JOIN worktrees w ON w.id = r.worktree_id LEFT JOIN review_rounds rr ON rr.review_id = r.id AND rr.ordinal = (SELECT MAX(ordinal) FROM review_rounds WHERE review_id = r.id) LEFT JOIN review_locks rl ON rl.review_id = r.id WHERE (? IS NULL OR p.project_key = ?) AND (? IS NULL OR r.target_kind != 'uncommitted' OR w.path = ?) ORDER BY r.project_id, r.target_kind, r.target_key, r.base_commit").all(
+      scope?.projectKey ?? null,
+      scope?.projectKey ?? null,
+      scope?.worktreePath ?? null,
+      scope?.worktreePath ?? null,
+    ) as Array<Record<string, unknown>>
+  }
+
+  private summary(value: Record<string, unknown>): ReviewSummary {
+    return {
+      id: value.id as string,
+      targetKind: value.target_kind as string,
+      targetKey: value.target_key as string,
+      targetLabel: value.target_label as string,
+      baseRef: value.base_ref as string,
+      baseCommit: value.base_commit as string,
+      ...(value.current_intent_type === null ? {} : { currentIntentType: value.current_intent_type as string, currentIntentRef: value.current_intent_ref as string }),
+      ...(value.latest_round_id === null ? {} : { latestRoundId: value.latest_round_id as string, latestRoundAt: value.latest_round_at as string }),
+      ...(value.fencing_token === null ? {} : { lock: { fencingToken: value.fencing_token as string, acquiredAt: value.acquired_at as string } }),
+    }
+  }
+
+  private scopedSummary(value: Record<string, unknown>): ScopedReviewSummary {
+    const summary = this.summary(value)
+    return summary.lock === undefined
+      ? summary
+      : { ...summary, lock: { acquiredAt: summary.lock.acquiredAt } }
   }
 
   listRounds(reviewId: string): ReviewRound[] {
