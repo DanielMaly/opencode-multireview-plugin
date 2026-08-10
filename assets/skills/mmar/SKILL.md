@@ -7,7 +7,7 @@ description: Run MMAR (multi-model adversarial review) as a durable, scope-isola
 
 Use this skill when the caller asks for an MMAR review. MMAR is a durable, scope-isolated review process; it is not a request to create or update a repository Markdown findings file.
 
-For requests to discover prior MMAR runs or retrieve historical findings, delegate to `mmar_orchestrator` and have it call `mmar_list_reviews` and `mmar_get_findings` directly. Do not start a new review for a retrieval request. Omit `worktreePath` for the current session worktree; when the requested scope is another local worktree, pass its exact absolute Git worktree root to both read tools. This intentionally widens model-facing read access beyond the OpenCode session root, while granting no database-path selection, SQL, writes, lock ownership, fencing credentials, `mmar_begin`, or `mmar_complete` authority. Explicit non-Git paths are unsupported, and uncommitted reviews remain isolated to the exact selected worktree.
+For requests to discover prior MMAR runs or retrieve historical findings, any agent with a valid context and session may call `mmar_list_reviews` and `mmar_get_findings` directly. Do not start a new review for a retrieval request or require delegation to `mmar_orchestrator`. Omit `worktreePath` for the current session worktree; when the requested scope is another local worktree, pass its exact absolute Git worktree root to the read tool. This intentionally widens model-facing read access beyond the OpenCode session root, while granting no database-path selection, SQL, writes, lock ownership, fencing credentials, `mmar_begin`, or `mmar_complete` authority. Explicit non-Git paths are unsupported, and uncommitted reviews remain isolated to the exact selected worktree.
 
 When the plugin is loaded, its bundled skill directory is added to OpenCode discovery automatically. A global or project skill installation is optional and is only a standalone/fallback copy for environments where the plugin is not loaded.
 
@@ -49,7 +49,7 @@ Source-resolution failure produces intent uncertainty. Independent specialists s
 
 ## Output boundary
 
-Agents must not create, read, modify, or use `REVIEW_FINDINGS.md`, other agent Markdown files, or git excludes. Only explicit CLI output may create a Markdown projection. The CLI remains the human-facing Markdown/history interface; agents should use the orchestrator read tools for structured historical retrieval:
+Agents must not create, read, modify, or use `REVIEW_FINDINGS.md`, other agent Markdown files, or git excludes. Only explicit CLI output may create a Markdown projection. The CLI remains the human-facing Markdown/history interface; any agent may use the read tools for structured historical retrieval:
 
 ```bash
 opencode-multireview export <review-id> [--round <round-id>] [--output <path>]

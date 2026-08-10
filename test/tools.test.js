@@ -88,6 +88,12 @@ test("lists scoped reviews and retrieves latest or exact completed findings with
     const exact = parse(await tools.mmar_get_findings.execute({ reviewId: first.reviewId, roundId: first.roundId, worktreePath: projectA }, context(projectB)));
     assert.equal(exact.id, first.roundId);
     assert.equal(exact.validFindings[0].title, "First round");
+    for (const agent of ["custom_agent", "mmar_correctness", "mmar_codestyle", "mmar_testing", "mmar_intent"]) {
+      assert.equal(parse(await tools.mmar_list_reviews.execute({}, context(projectA, agent))).some(({ id }) => id === first.reviewId), true);
+      assert.equal(parse(await tools.mmar_list_reviews.execute({ worktreePath: projectA }, context(projectB, agent))).some(({ id }) => id === first.reviewId), true);
+      assert.equal(parse(await tools.mmar_get_findings.execute({ reviewId: first.reviewId }, context(projectA, agent))).id, second.roundId);
+      assert.equal(parse(await tools.mmar_get_findings.execute({ reviewId: first.reviewId, worktreePath: projectA }, context(projectB, agent))).id, second.roundId);
+    }
     assert.equal(new ReviewStore({ databasePath }).inspectLock(first.reviewId), undefined);
 
     const locked = parse(await tools.mmar_begin.execute(beginArgs(undefined, "history"), context(projectA)));
@@ -141,10 +147,8 @@ test("allows explicit reads outside context containment and resolves symlinked a
     const round = parse(await tools.mmar_get_findings.execute({ reviewId: begun.reviewId, worktreePath: linked }, linkedContext));
     assert.equal(round.validFindings[0].title, "Linked worktree");
 
-    await assert.rejects(
-      () => tools.mmar_list_reviews.execute({ worktreePath: linked }, { ...linkedContext, agent: "mmar_testing" }),
-      /only to mmar_orchestrator/,
-    );
+    const specialistListing = parse(await tools.mmar_list_reviews.execute({ worktreePath: linked }, { ...linkedContext, agent: "mmar_testing" }));
+    assert.equal(specialistListing.some(({ id }) => id === begun.reviewId), true);
     await assert.rejects(
       () => tools.mmar_get_findings.execute({ reviewId: begun.reviewId, worktreePath: linked }, { ...linkedContext, sessionID: "__legacy_unbound__" }),
       /valid sessionID/,
@@ -309,15 +313,19 @@ test("rejects invalid and out-of-scope retrievals with explicit completed-round 
     await assert.rejects(() => tools.mmar_list_reviews.execute({ worktreePath: file }, context(projectA)), /not a directory/);
     await assert.rejects(() => tools.mmar_get_findings.execute({ reviewId: pending.reviewId, worktreePath: nested }, context(projectA)), /MMAR worktreePath must be the Git worktree root: /);
     await assert.rejects(() => tools.mmar_list_reviews.execute({ worktreePath: outside }, context(projectA)), /MMAR worktreePath is not a Git repository or worktree: /);
-    for (const execute of [
-      () => tools.mmar_list_reviews.execute({ worktreePath: projectA }, context(projectA, "mmar_correctness")),
-      () => tools.mmar_get_findings.execute({ reviewId: pending.reviewId, worktreePath: projectA }, context(projectA, "mmar_correctness")),
-    ]) await assert.rejects(execute, /only to mmar_orchestrator/);
-    for (const sessionID of [undefined, "__legacy_unbound__"]) {
-      for (const execute of [
-        () => tools.mmar_list_reviews.execute({ worktreePath: projectA }, { ...context(projectA), sessionID }),
-        () => tools.mmar_get_findings.execute({ reviewId: pending.reviewId, worktreePath: projectA }, { ...context(projectA), sessionID }),
-      ]) await assert.rejects(execute, /valid sessionID/);
+    for (const agent of ["custom_agent", "mmar_correctness", "mmar_codestyle", "mmar_testing", "mmar_intent"]) {
+      for (const sessionID of [undefined, "__legacy_unbound__"]) {
+        for (const execute of [
+          () => tools.mmar_list_reviews.execute({ worktreePath: projectA }, { ...context(projectA, agent), sessionID }),
+          () => tools.mmar_get_findings.execute({ reviewId: pending.reviewId, worktreePath: projectA }, { ...context(projectA, agent), sessionID }),
+        ]) await assert.rejects(execute, /valid sessionID/);
+      }
+      await assert.rejects(() => tools.mmar_begin.execute(beginArgs(), context(projectA, agent)), /only to mmar_orchestrator/);
+      await assert.rejects(() => tools.mmar_complete.execute({
+        reviewId: pending.reviewId,
+        roundId: pending.roundId,
+        fencingToken: "00000000-0000-0000-0000-000000000000",
+      }, context(projectA, agent)), /only to mmar_orchestrator/);
     }
   } finally {
     rmSync(projectA, { recursive: true, force: true });
@@ -477,18 +485,26 @@ test("asserts exact orchestrator prompt contracts without claiming executable mo
   const retrieval = prompt.indexOf("## Historical retrieval");
   assert.ok(prompt.includes("## Required workflow for new review requests"));
   const begin = prompt.indexOf("Call `mmar_begin` first");
-  const read = prompt.indexOf("obtain the changeset");
+  const read = prompt.indexOf("Obtain the changeset");
   const spawn = prompt.indexOf("launch exactly these independent specialists");
   assert.ok(retrieval >= 0 && retrieval < begin);
-  assert.match(prompt, /Historical retrieval[\s\S]*mmar_list_reviews[\s\S]*mmar_get_findings[\s\S]*do not call `mmar_begin`/);
+  assert.match(prompt, /Historical retrieval[\s\S]*Callers may use the read-only[\s\S]*this workflow does not start a review/);
   assert.ok(begin >= 0 && begin < read && begin < spawn);
+  assert.match(prompt, /returned `reviewId` and `repository\.worktreePath` as the current review scope/);
+  assert.match(prompt, /including both exact values in every specialist's compact scope as `reviewId` and `worktreePath`/);
   assert.match(prompt, /locked: true.*spawn nobody.*exit cleanly/s);
   assert.match(prompt, /concurrently launch exactly these independent specialists/);
   for (const specialist of ["mmar_correctness", "mmar_codestyle", "mmar_testing"]) assert.ok(prompt.includes(`- \`${specialist}\``));
   assert.match(prompt, /any intent reference was supplied.*launch `mmar_intent`.*resolution failed/s);
   assert.match(prompt, /partial.*blocked.*runtime output only/s);
   assert.match(prompt, /prior ignored entries as revalidation candidates.*not exclusions/s);
+  assert.match(prompt, /During an active lane, specialists may retrieve history only with the supplied current `reviewId` and `worktreePath`; they must not list or browse unrelated reviews/);
   assert.match(prompt, /After a successful begin, call `mmar_complete` exactly once/s);
   assert.doesNotMatch(prompt, /REVIEW_FINDINGS\.md|git excludes/);
-  assert.doesNotMatch(readFileSync(new URL("../assets/agents/mmar_intent.md", import.meta.url), "utf8"), /\b(?:gh|Jira)\b.*(?:fetch|retriev)/is);
+  const intentPrompt = readFileSync(new URL("../assets/agents/mmar_intent.md", import.meta.url), "utf8");
+  assert.match(intentPrompt, /use `mmar_get_findings` only for that review ID and worktree path/);
+  assert.match(intentPrompt, /MMAR history is not authoritative intent source material/);
+  assert.match(intentPrompt, /must not be used to fetch Jira issues, Jira URLs, local files/);
+  assert.match(intentPrompt, /Never retrieve external or local source material yourself/);
+  assert.doesNotMatch(intentPrompt, /\b(?:may|can|should)\b[^.\n]*(?:fetch|retrieve)[^.\n]*(?:Jira|local)/is);
 });

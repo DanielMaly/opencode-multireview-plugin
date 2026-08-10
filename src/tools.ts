@@ -78,8 +78,8 @@ function canonicalPath(path: string): string {
   }
 }
 
-function trustedWorktree(context: ToolContext): string {
-  validateMmarContext(context)
+function contextWorktree(context: ToolContext): string {
+  validateToolContext(context)
   const directory = context.directory.trim()
   const worktree = context.worktree.trim()
   const relativeDirectory = relative(canonicalPath(worktree), canonicalPath(directory))
@@ -89,13 +89,17 @@ function trustedWorktree(context: ToolContext): string {
   return canonicalPath(worktree)
 }
 
-function validateMmarContext(context: ToolContext): void {
-  if (context.agent !== "mmar_orchestrator") throw new Error("MMAR tools are available only to mmar_orchestrator")
+function validateToolContext(context: ToolContext): void {
   const directory = context.directory.trim()
   const worktree = context.worktree.trim()
   if (!directory || !worktree) throw new Error("MMAR tool context must include directory and worktree")
   const sessionID = context.sessionID?.trim()
   if (!sessionID || sessionID === "__legacy_unbound__") throw new Error("MMAR tool context must include a valid sessionID")
+}
+
+function trustedWriteWorktree(context: ToolContext): string {
+  if (context.agent !== "mmar_orchestrator") throw new Error("MMAR write tools are available only to mmar_orchestrator")
+  return contextWorktree(context)
 }
 
 function explicitWorktree(path: string): RepositoryIdentity {
@@ -123,10 +127,10 @@ function explicitWorktree(path: string): RepositoryIdentity {
 
 function readWorktree(context: ToolContext, worktreePath: string | undefined): RepositoryIdentity {
   if (worktreePath === undefined) {
-    const path = trustedWorktree(context)
+    const path = contextWorktree(context)
     return resolveRepositoryIdentity(path)
   }
-  validateMmarContext(context)
+  validateToolContext(context)
   return explicitWorktree(worktreePath)
 }
 
@@ -149,7 +153,7 @@ export function createMmarTools(databaseOptions: DatabaseOptions = {}): Record<s
     args: beginArgsSchema.shape,
     async execute(args, context) {
       const input = beginArgsSchema.parse(args)
-      const worktree = trustedWorktree(context)
+      const worktree = trustedWriteWorktree(context)
       const identity = resolveReviewIdentity(worktree, input.baseRef)
       const target = normalizeTarget(input.target as TargetInput, identity)
       const review = (await getStore()).begin({ identity, target, intent: input.intent ?? undefined, sessionID: context.sessionID })
@@ -174,7 +178,7 @@ export function createMmarTools(databaseOptions: DatabaseOptions = {}): Record<s
     args: completeArgsSchema.shape,
     async execute(args, context) {
       const input = completeArgsSchema.parse(args)
-      const worktree = trustedWorktree(context)
+      const worktree = trustedWriteWorktree(context)
       const repository = resolveRepositoryIdentity(worktree)
       const reviewStore = await getStore()
       reviewStore.assertReviewScope(input.reviewId, repository)
@@ -193,7 +197,7 @@ export function createMmarTools(databaseOptions: DatabaseOptions = {}): Record<s
   })
 
   const listReviews = tool({
-    description: "List completed and in-progress MMAR reviews for the current worktree, or an explicit absolute local Git worktree root. Explicit paths intentionally widen model-facing read access beyond the OpenCode session root; no write or lock authority is granted.",
+    description: "List completed and in-progress MMAR reviews for the current worktree, or an explicit absolute local Git worktree root. Available to any agent with a valid context and session. Explicit paths intentionally widen model-facing read access beyond the OpenCode session root; no write or lock authority is granted.",
     args: listReviewsArgsSchema.shape,
     async execute(args, context) {
       const input = listReviewsArgsSchema.parse(args)
@@ -203,7 +207,7 @@ export function createMmarTools(databaseOptions: DatabaseOptions = {}): Record<s
   })
 
   const getFindings = tool({
-    description: "Retrieve a completed MMAR review round from the current worktree, or an explicit absolute local Git worktree root. Explicit paths intentionally widen model-facing read access beyond the OpenCode session root; no write or lock authority is granted.",
+    description: "Retrieve a completed MMAR review round from the current worktree, or an explicit absolute local Git worktree root. Available to any agent with a valid context and session. Explicit paths intentionally widen model-facing read access beyond the OpenCode session root; no write or lock authority is granted.",
     args: getFindingsArgsSchema.shape,
     async execute(args, context) {
       const input = getFindingsArgsSchema.parse(args)

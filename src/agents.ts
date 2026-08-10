@@ -72,8 +72,8 @@ const REVIEWER_PERMISSION = {
 const REVIEWER_TOOLS = {
   mmar_begin: false,
   mmar_complete: false,
-  mmar_list_reviews: false,
-  mmar_get_findings: false,
+  mmar_list_reviews: true,
+  mmar_get_findings: true,
 } as const
 
 export function buildAgents(config: MultireviewPluginConfig): Record<string, AgentDefinition> {
