@@ -1,4 +1,4 @@
-import type { ReviewRound, ReviewSummary } from "./storage/reviews.js"
+import type { ReviewRound, ReviewSummary } from "./review.js"
 
 export interface ReviewMarkdownMetadata {
   reviewId: string

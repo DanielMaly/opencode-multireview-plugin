@@ -1,14 +1,10 @@
 import type { DatabaseOptions } from "./database.js"
-import {
-  ReviewStore,
-  type IncompleteDiagnosticMarkerRequest,
-  type IncompleteDiagnosticMarkerResult,
-} from "./reviews.js"
+import { ReviewStore } from "./reviews.js"
+import type { IncompleteDiagnosticMarkerRequest, IncompleteDiagnosticMarkerResult } from "../review.js"
 
 export interface ReviewLifecycle {
   ownsActiveLock(sessionID: string, reviewId?: string): boolean
   activeReviewForSession(sessionID: string): { reviewId: string } | undefined
-  canDispatchSpecialists(sessionID: string, reviewId: string): boolean
   recordIncompleteDiagnosticMarker(request: IncompleteDiagnosticMarkerRequest): IncompleteDiagnosticMarkerResult
   releaseIncompleteDiagnosticMarker(request: IncompleteDiagnosticMarkerRequest): boolean
 }
@@ -26,10 +22,6 @@ export class PersistentReviewLifecycle implements ReviewLifecycle {
 
   activeReviewForSession(sessionID: string): { reviewId: string } | undefined {
     return this.store.activeReviewForSession(sessionID)
-  }
-
-  canDispatchSpecialists(sessionID: string, reviewId: string): boolean {
-    return this.ownsActiveLock(sessionID, reviewId)
   }
 
   recordIncompleteDiagnosticMarker(request: IncompleteDiagnosticMarkerRequest): IncompleteDiagnosticMarkerResult {

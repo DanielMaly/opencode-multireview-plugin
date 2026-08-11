@@ -1,4 +1,5 @@
-export type ReviewerKey = "coordinator" | "codestyle" | "correctness" | "testing" | "intent"
+export const REVIEWER_KEYS = ["coordinator", "codestyle", "correctness", "testing", "intent"] as const
+export type ReviewerKey = (typeof REVIEWER_KEYS)[number]
 
 export type ModelSelectionInput = string | {
   model: string
@@ -29,10 +30,49 @@ export const DEFAULT_CONFIG: MultireviewPluginConfig = {
   },
 }
 
-export const AGENT_NAMES = {
-  coordinator: "mmar_orchestrator",
-  codestyle: "mmar_codestyle",
-  correctness: "mmar_correctness",
-  testing: "mmar_testing",
-  intent: "mmar_intent",
-} as const satisfies Record<ReviewerKey, string>
+export type ReviewerMetadata = {
+  name: string
+  description: string
+  mode: "primary" | "subagent" | "all"
+  promptFile: string
+}
+
+export const REVIEWER_REGISTRY = {
+  coordinator: {
+    name: "mmar_orchestrator",
+    description:
+      "Principal Engineer Coordinator for MMAR, multireview, and multi-model adversarial reviews of pull requests, branches, commits, uncommitted worktrees, and custom changesets.",
+    mode: "all",
+    promptFile: "mmar_orchestrator.md",
+  },
+  codestyle: {
+    name: "mmar_codestyle",
+    description:
+      "Internal MMAR specialist lane focused exclusively on code style and readability review. Use for style-only review, linting feedback, naming feedback, or convention and clean-code questions; return results to the orchestrator and never initiate persistence.",
+    mode: "subagent",
+    promptFile: "mmar_codestyle.md",
+  },
+  correctness: {
+    name: "mmar_correctness",
+    description:
+      "Internal MMAR specialist lane focused exclusively on correctness and security code review — covering logic soundness, edge cases, error handling, concurrency, performance, and OWASP Top 10 vulnerabilities. Return results to the orchestrator and never initiate persistence.",
+    mode: "subagent",
+    promptFile: "mmar_correctness.md",
+  },
+  testing: {
+    name: "mmar_testing",
+    description:
+      "Internal MMAR specialist lane focused exclusively on test coverage review. Identify gaps in tests for changed code paths, return results to the orchestrator, and never initiate persistence.",
+    mode: "subagent",
+    promptFile: "mmar_testing.md",
+  },
+  intent: {
+    name: "mmar_intent",
+    description:
+      "Internal MMAR specialist lane focused exclusively on conformance to caller-supplied plans, specifications, tickets, and decisions. Return results to the orchestrator and never initiate persistence.",
+    mode: "subagent",
+    promptFile: "mmar_intent.md",
+  },
+} as const satisfies Record<ReviewerKey, ReviewerMetadata>
+
+export const AGENT_NAMES = Object.fromEntries(REVIEWER_KEYS.map((key) => [key, REVIEWER_REGISTRY[key].name])) as Record<ReviewerKey, string>

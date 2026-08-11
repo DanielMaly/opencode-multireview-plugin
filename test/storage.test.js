@@ -12,6 +12,7 @@ import { normalizeTarget, resolveBase, resolveRepositoryIdentity } from "../dist
 import { ensureDatabaseDirectory } from "../dist/storage/path.js";
 import { createMmarTools } from "../dist/tools.js";
 import { hashRoundPayload } from "../dist/findings.js";
+import { LEGACY_SESSION_ID } from "../dist/review.js";
 
 function temporaryPath() {
   const directory = mkdtempSync(join(tmpdir(), "opencode-multireview-storage-"));
@@ -121,7 +122,7 @@ test("upgrades v1 lifecycle data and supports legacy completion compatibility", 
     v1.close();
 
     const upgraded = openDatabase({ databasePath });
-    assert.equal(upgraded.prepare("SELECT session_id FROM review_locks WHERE review_id = ?").get(activeReviewId).session_id, "__legacy_unbound__");
+    assert.equal(upgraded.prepare("SELECT session_id FROM review_locks WHERE review_id = ?").get(activeReviewId).session_id, LEGACY_SESSION_ID);
     assert.equal(upgraded.prepare("SELECT completed_session_id FROM review_rounds WHERE id = ?").get(completedRoundId).completed_session_id, null);
     upgraded.close();
 
@@ -233,6 +234,8 @@ test("isolates scopes, returns previous ignored snapshots, fences locks, and sup
     const store = new ReviewStore({ databasePath });
     const first = store.begin({ identity: identity(), target: target("A"), intent: { type: "jira", ref: "PROJ-1" } });
     assert.equal(first.locked, false);
+    assert.equal(store.getSummary(first.reviewId).id, first.reviewId);
+    assert.equal(store.getSummary("missing-review"), undefined);
     const contention = store.begin({ identity: identity(), target: target("A") });
     assert.equal(contention.locked, true);
     assert.equal(contention.reviewId, first.reviewId);
@@ -402,7 +405,6 @@ test("persists session ownership across store restarts and prevents dispatch aft
     });
     const lifecycle = new PersistentReviewLifecycle({ databasePath });
     assert.equal(lifecycle.ownsActiveLock("session-a", review.reviewId), false);
-    assert.equal(lifecycle.canDispatchSpecialists("session-a", review.reviewId), false);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

@@ -141,7 +141,6 @@ test("real OpenCode loads the local plugin alongside legacy agents and enforces 
     const mmarSkill = skills.find(({ name }) => name === "mmar")
     assert.ok(mmarSkill, "native debug skill discovery did not find mmar")
     assert.equal(mmarSkill.location, new URL(bundledSkillFile).pathname)
-    assert.match(mmarSkill.location, /opencode-multireview-plugin[\\/]assets[\\/]skills/)
     assert.equal(existsSync(join(project, ".opencode", "skills", "mmar", "SKILL.md")), false)
 
     for (const name of ["mmar_orchestrator", "mmar_correctness", "mmar_codestyle", "mmar_testing", "mmar_intent"]) {
