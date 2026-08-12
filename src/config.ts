@@ -6,10 +6,9 @@ import {
   type MultireviewPluginConfig,
   type MultireviewPluginOptions,
   type ReviewerKey,
+  REVIEWER_KEYS,
 } from "./defaults.js"
 import { defaultConfigPath, resolveHomePath } from "./paths.js"
-
-const REVIEWER_KEYS = ["coordinator", "codestyle", "correctness", "testing", "intent"] as const satisfies readonly ReviewerKey[]
 
 type PartialConfig = Partial<{
   profile: string

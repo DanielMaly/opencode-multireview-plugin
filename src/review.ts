@@ -1,0 +1,114 @@
+import type {
+  FindingInput,
+  IntentUncertainty,
+  NormalizedFinding,
+} from "./findings.js"
+import type { NormalizedTarget, ResolvedReviewIdentity } from "./repository.js"
+
+export const intentTypes = ["jira", "local_file"] as const
+export type IntentType = (typeof intentTypes)[number]
+
+export interface IntentReference {
+  type: IntentType
+  ref: string
+}
+
+export interface BeginReviewRequest {
+  identity: ResolvedReviewIdentity
+  target: NormalizedTarget
+  intent?: IntentReference | null
+  sessionID?: string
+}
+
+export interface IgnoredSnapshot extends NormalizedFinding {
+  id: number
+}
+
+export type BeginReviewResult = {
+  reviewId: string
+  locked: false
+  roundId: string
+  fencingToken: string
+  acquiredAt: string
+  previousIgnored: IgnoredSnapshot[]
+} | {
+  reviewId: string
+  locked: true
+  acquiredAt: string
+  previousIgnored: []
+}
+
+export type ReviewScope = Pick<ResolvedReviewIdentity, "projectKey" | "worktreePath">
+
+export interface CompleteReviewRequest {
+  reviewId: string
+  roundId: string
+  fencingToken: string
+  sessionID?: string
+  intent?: IntentReference | null
+  validFindings?: FindingInput[]
+  ignoredFindings?: FindingInput[]
+  uncertainties?: IntentUncertainty[]
+}
+
+export interface ReviewSummary {
+  id: string
+  targetKind: string
+  targetKey: string
+  targetLabel: string
+  baseRef: string
+  baseCommit: string
+  currentIntentType?: string
+  currentIntentRef?: string
+  latestRoundId?: string
+  latestRoundAt?: string
+  lock?: { fencingToken: string; acquiredAt: string }
+}
+
+export type ScopedReviewSummary = Omit<ReviewSummary, "lock"> & {
+  lock?: { acquiredAt: string }
+}
+
+export interface LockInfo {
+  reviewId: string
+  fencingToken: string
+  acquiredAt: string
+  sessionID?: string
+}
+
+export type IncompleteDiagnosticEvent = "session.error"
+
+export interface IncompleteDiagnosticMarkerRequest {
+  sessionID: string
+  reviewId: string
+  event: IncompleteDiagnosticEvent
+  markerKey?: string
+}
+
+export interface IncompleteDiagnosticMarkerResult {
+  markerId: number
+  deduplicated: boolean
+}
+
+export interface ReviewRound {
+  id: string
+  reviewId: string
+  ordinal: number
+  payloadHash: string
+  intent?: IntentReference
+  completedAt: string
+  validFindings: NormalizedFinding[]
+  ignoredFindings: IgnoredSnapshot[]
+  uncertainties: IntentUncertainty[]
+}
+
+export const LEGACY_SESSION_ID = "__legacy_unbound__"
+
+export function sessionValue(sessionID: string | undefined): string | null {
+  const value = sessionID?.trim() || null
+  return value === LEGACY_SESSION_ID ? null : value
+}
+
+export function intentValues(intent: IntentReference | null | undefined): [string | null, string | null] {
+  return intent ? [intent.type, intent.ref] : [null, null]
+}

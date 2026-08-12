@@ -4,7 +4,8 @@ export const findingSeverities = ["CRITICAL", "HIGH", "MEDIUM", "LOW"] as const
 export type FindingSeverity = (typeof findingSeverities)[number]
 export const findingCategories = ["CORRECTNESS", "CODESTYLE", "TESTING", "INTENT"] as const
 export type FindingCategory = (typeof findingCategories)[number]
-export type FindingDisposition = "valid" | "ignored"
+export const findingDispositions = ["valid", "ignored"] as const
+export type FindingDisposition = (typeof findingDispositions)[number]
 
 export interface FindingInput {
   disposition: FindingDisposition
@@ -52,7 +53,7 @@ function canonical(value: unknown): string {
 }
 
 export function normalizeFinding(input: FindingInput): NormalizedFinding {
-  if (!input || !["valid", "ignored"].includes(input.disposition)) throw new Error("finding disposition is invalid")
+  if (!input || !findingDispositions.includes(input.disposition)) throw new Error("finding disposition is invalid")
   if (!findingSeverities.includes(input.severity)) throw new Error("finding severity is invalid")
   if (!findingCategories.includes(input.category)) throw new Error("finding category is invalid")
   const disposition = input.disposition

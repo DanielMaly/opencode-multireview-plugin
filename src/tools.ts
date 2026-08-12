@@ -1,14 +1,15 @@
-import { realpathSync, statSync } from "node:fs"
-import { isAbsolute, relative, resolve } from "node:path"
 import { tool, type ToolContext, type ToolDefinition } from "@opencode-ai/plugin"
-import { normalizeTarget, resolveRepositoryIdentity, resolveReviewIdentity, type RepositoryIdentity, type TargetInput } from "./repository.js"
+import { relative } from "node:path"
+import { findingCategories, findingDispositions, findingSeverities } from "./findings.js"
+import { canonicalPath, normalizeTarget, resolveExplicitGitWorktree, resolveRepositoryIdentity, resolveReviewIdentity, targetKinds, type RepositoryIdentity, type TargetInput } from "./repository.js"
+import { intentTypes, LEGACY_SESSION_ID } from "./review.js"
 import type { DatabaseOptions } from "./storage/database.js"
 import type { ReviewStore } from "./storage/reviews.js"
 
 const z = tool.schema
 
 const targetSchema = z.object({
-  kind: z.enum(["pull_request", "branch", "commit", "uncommitted", "custom"]),
+  kind: z.enum(targetKinds),
   label: z.string().trim().min(1).optional(),
   provider: z.string().trim().min(1).optional(),
   repository: z.string().trim().min(1).optional(),
@@ -19,14 +20,14 @@ const targetSchema = z.object({
 }).strict()
 
 const intentSchema = z.object({
-  type: z.enum(["jira", "local_file"]),
+  type: z.enum(intentTypes),
   ref: z.string().trim().min(1),
 }).strict()
 
 const findingSchema = z.object({
-  disposition: z.enum(["valid", "ignored"]),
-  severity: z.enum(["CRITICAL", "HIGH", "MEDIUM", "LOW"]),
-  category: z.enum(["CORRECTNESS", "CODESTYLE", "TESTING", "INTENT"]),
+  disposition: z.enum(findingDispositions),
+  severity: z.enum(findingSeverities),
+  category: z.enum(findingCategories),
   title: z.string(),
   bodyMarkdown: z.string(),
   wontfix: z.string().optional(),
@@ -70,14 +71,6 @@ const getFindingsArgsSchema = z.object({
   worktreePath: z.string().trim().min(1).optional(),
 }).strict()
 
-function canonicalPath(path: string): string {
-  try {
-    return realpathSync.native(path)
-  } catch {
-    return resolve(path)
-  }
-}
-
 function contextWorktree(context: ToolContext): string {
   validateToolContext(context)
   const directory = context.directory.trim()
@@ -94,44 +87,21 @@ function validateToolContext(context: ToolContext): void {
   const worktree = context.worktree.trim()
   if (!directory || !worktree) throw new Error("MMAR tool context must include directory and worktree")
   const sessionID = context.sessionID?.trim()
-  if (!sessionID || sessionID === "__legacy_unbound__") throw new Error("MMAR tool context must include a valid sessionID")
+  if (!sessionID || sessionID === LEGACY_SESSION_ID) throw new Error("MMAR tool context must include a valid sessionID")
 }
 
-function trustedWriteWorktree(context: ToolContext): string {
+function trustedWriteRepository(context: ToolContext): string {
   if (context.agent !== "mmar_orchestrator") throw new Error("MMAR write tools are available only to mmar_orchestrator")
   return contextWorktree(context)
 }
 
-function explicitWorktree(path: string): RepositoryIdentity {
-  if (!isAbsolute(path)) throw new Error("MMAR worktreePath must be an absolute path")
-  let stats: ReturnType<typeof statSync>
-  try {
-    stats = statSync(path)
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code
-    if (code === "ENOENT") throw new Error(`MMAR worktreePath does not exist: ${path}`, { cause: error })
-    throw new Error(`MMAR worktreePath cannot be accessed: ${path}`, { cause: error })
-  }
-  if (!stats.isDirectory()) throw new Error(`MMAR worktreePath is not a directory: ${path}`)
-  let canonical: string
-  try {
-    canonical = realpathSync.native(path)
-  } catch (error) {
-    throw new Error(`MMAR worktreePath could not be canonicalized: ${path}`, { cause: error })
-  }
-  const repository = resolveRepositoryIdentity(canonical)
-  if (!repository.isGit) throw new Error(`MMAR worktreePath is not a Git repository or worktree: ${canonical}`)
-  if (repository.rootPath !== canonical) throw new Error(`MMAR worktreePath must be the Git worktree root: ${canonical}`)
-  return repository
-}
-
-function readWorktree(context: ToolContext, worktreePath: string | undefined): RepositoryIdentity {
+function readRepository(context: ToolContext, worktreePath: string | undefined): RepositoryIdentity {
   if (worktreePath === undefined) {
     const path = contextWorktree(context)
     return resolveRepositoryIdentity(path)
   }
   validateToolContext(context)
-  return explicitWorktree(worktreePath)
+  return resolveExplicitGitWorktree(worktreePath)
 }
 
 function json(value: unknown): string {
@@ -153,7 +123,7 @@ export function createMmarTools(databaseOptions: DatabaseOptions = {}): Record<s
     args: beginArgsSchema.shape,
     async execute(args, context) {
       const input = beginArgsSchema.parse(args)
-      const worktree = trustedWriteWorktree(context)
+      const worktree = trustedWriteRepository(context)
       const identity = resolveReviewIdentity(worktree, input.baseRef)
       const target = normalizeTarget(input.target as TargetInput, identity)
       const review = (await getStore()).begin({ identity, target, intent: input.intent ?? undefined, sessionID: context.sessionID })
@@ -178,7 +148,7 @@ export function createMmarTools(databaseOptions: DatabaseOptions = {}): Record<s
     args: completeArgsSchema.shape,
     async execute(args, context) {
       const input = completeArgsSchema.parse(args)
-      const worktree = trustedWriteWorktree(context)
+      const worktree = trustedWriteRepository(context)
       const repository = resolveRepositoryIdentity(worktree)
       const reviewStore = await getStore()
       reviewStore.assertReviewScope(input.reviewId, repository)
@@ -201,7 +171,7 @@ export function createMmarTools(databaseOptions: DatabaseOptions = {}): Record<s
     args: listReviewsArgsSchema.shape,
     async execute(args, context) {
       const input = listReviewsArgsSchema.parse(args)
-      const repository = readWorktree(context, input.worktreePath)
+      const repository = readRepository(context, input.worktreePath)
       return json((await getStore()).listScoped(repository))
     },
   })
@@ -211,7 +181,7 @@ export function createMmarTools(databaseOptions: DatabaseOptions = {}): Record<s
     args: getFindingsArgsSchema.shape,
     async execute(args, context) {
       const input = getFindingsArgsSchema.parse(args)
-      const repository = readWorktree(context, input.worktreePath)
+      const repository = readRepository(context, input.worktreePath)
       const reviewStore = await getStore()
       reviewStore.assertReviewScope(input.reviewId, repository)
       const round = reviewStore.getRound(input.reviewId, input.roundId)

@@ -1,9 +1,16 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { loadMultireviewConfig } from "../dist/config.js";
+import { DEFAULT_CONFIG, REVIEWER_KEYS } from "../dist/defaults.js";
+
+test("shipped defaults contain every registered reviewer", () => {
+  const shipped = JSON.parse(readFileSync(new URL("../config/multireview-plugin.defaults.json", import.meta.url), "utf8"));
+  assert.deepEqual(Object.keys(shipped.models).sort(), [...REVIEWER_KEYS].sort());
+  for (const key of REVIEWER_KEYS) assert.equal(shipped.models[key], DEFAULT_CONFIG.models[key].model);
+});
 
 test("uses defaults when no config file exists", () => {
   const config = loadMultireviewConfig({ configPath: "/tmp/opencode-multireview-plugin-missing.json" });

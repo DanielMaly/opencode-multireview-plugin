@@ -7,6 +7,7 @@ import test from "node:test";
 import { createMmarTools, mmarTools } from "../dist/tools.js";
 import { resolveRepositoryIdentity } from "../dist/repository.js";
 import { ReviewStore } from "../dist/storage/reviews.js";
+import { LEGACY_SESSION_ID } from "../dist/review.js";
 
 function gitProject(prefix) {
   const directory = mkdtempSync(join(tmpdir(), prefix));
@@ -150,7 +151,7 @@ test("allows explicit reads outside context containment and resolves symlinked a
     const specialistListing = parse(await tools.mmar_list_reviews.execute({ worktreePath: linked }, { ...linkedContext, agent: "mmar_testing" }));
     assert.equal(specialistListing.some(({ id }) => id === begun.reviewId), true);
     await assert.rejects(
-      () => tools.mmar_get_findings.execute({ reviewId: begun.reviewId, worktreePath: linked }, { ...linkedContext, sessionID: "__legacy_unbound__" }),
+      () => tools.mmar_get_findings.execute({ reviewId: begun.reviewId, worktreePath: linked }, { ...linkedContext, sessionID: LEGACY_SESSION_ID }),
       /valid sessionID/,
     );
   } finally {
@@ -314,7 +315,7 @@ test("rejects invalid and out-of-scope retrievals with explicit completed-round 
     await assert.rejects(() => tools.mmar_get_findings.execute({ reviewId: pending.reviewId, worktreePath: nested }, context(projectA)), /MMAR worktreePath must be the Git worktree root: /);
     await assert.rejects(() => tools.mmar_list_reviews.execute({ worktreePath: outside }, context(projectA)), /MMAR worktreePath is not a Git repository or worktree: /);
     for (const agent of ["custom_agent", "mmar_correctness", "mmar_codestyle", "mmar_testing", "mmar_intent"]) {
-      for (const sessionID of [undefined, "__legacy_unbound__"]) {
+      for (const sessionID of [undefined, LEGACY_SESSION_ID]) {
         for (const execute of [
           () => tools.mmar_list_reviews.execute({ worktreePath: projectA }, { ...context(projectA, agent), sessionID }),
           () => tools.mmar_get_findings.execute({ reviewId: pending.reviewId, worktreePath: projectA }, { ...context(projectA, agent), sessionID }),

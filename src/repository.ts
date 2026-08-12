@@ -1,9 +1,10 @@
 import { createHash, randomUUID } from "node:crypto"
 import { execFileSync } from "node:child_process"
-import { existsSync, realpathSync } from "node:fs"
-import { basename, dirname, resolve } from "node:path"
+import { existsSync, realpathSync, statSync } from "node:fs"
+import { basename, dirname, isAbsolute, resolve } from "node:path"
 
-export type TargetKind = "pull_request" | "branch" | "commit" | "uncommitted" | "custom"
+export const targetKinds = ["pull_request", "branch", "commit", "uncommitted", "custom"] as const
+export type TargetKind = (typeof targetKinds)[number]
 
 export interface TargetInput {
   kind: TargetKind
@@ -43,12 +44,35 @@ export interface ResolvedBase {
 
 export interface ResolvedReviewIdentity extends RepositoryIdentity, ResolvedBase {}
 
-function canonicalPath(path: string): string {
+export function canonicalPath(path: string): string {
   try {
     return realpathSync.native(path)
   } catch {
     return resolve(path)
   }
+}
+
+export function resolveExplicitGitWorktree(path: string): RepositoryIdentity {
+  if (!isAbsolute(path)) throw new Error("MMAR worktreePath must be an absolute path")
+  let stats: ReturnType<typeof statSync>
+  try {
+    stats = statSync(path)
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    if (code === "ENOENT") throw new Error(`MMAR worktreePath does not exist: ${path}`, { cause: error })
+    throw new Error(`MMAR worktreePath cannot be accessed: ${path}`, { cause: error })
+  }
+  if (!stats.isDirectory()) throw new Error(`MMAR worktreePath is not a directory: ${path}`)
+  let canonical: string
+  try {
+    canonical = realpathSync.native(path)
+  } catch (error) {
+    throw new Error(`MMAR worktreePath could not be canonicalized: ${path}`, { cause: error })
+  }
+  const repository = resolveRepositoryIdentity(canonical)
+  if (!repository.isGit) throw new Error(`MMAR worktreePath is not a Git repository or worktree: ${canonical}`)
+  if (repository.rootPath !== canonical) throw new Error(`MMAR worktreePath must be the Git worktree root: ${canonical}`)
+  return repository
 }
 
 function hasGitMetadata(cwd: string): boolean {

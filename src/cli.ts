@@ -4,7 +4,8 @@ import { createInterface } from "node:readline"
 import { mkdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { basename, dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
-import { ReviewStore, type ReviewSummary } from "./storage/reviews.js"
+import { ReviewStore } from "./storage/reviews.js"
+import type { ReviewSummary } from "./review.js"
 import { resolveRepositoryIdentity } from "./repository.js"
 import { serializeReviewMarkdown } from "./markdown.js"
 import { installSkill, type InstallMode } from "./installer.js"
@@ -64,8 +65,8 @@ function listCommand(args: string[]): void {
   process.stdout.write(`${reviews.map(formatSummary).join("\n\n")}\n`)
 }
 
-function findReview(reviewId: string): ReviewSummary {
-  const review = store().list(undefined).find((candidate) => candidate.id === reviewId)
+function findReview(reviewStore: ReviewStore, reviewId: string): ReviewSummary {
+  const review = reviewStore.getSummary(reviewId)
   if (!review) throw new Error(`Unknown review: ${reviewId}`)
   return review
 }
@@ -99,8 +100,9 @@ function exportCommand(args: string[]): void {
       index += 1
     } else usage()
   }
-  const review = findReview(reviewId)
-  const round = store().getRound(reviewId, roundId)
+  const reviewStore = store()
+  const review = findReview(reviewStore, reviewId)
+  const round = reviewStore.getRound(reviewId, roundId)
   if (!round) {
     if (roundId) throw new Error(`Unknown round ${roundId} for review ${reviewId}`)
     throw new Error(`Review ${reviewId} has no completed rounds`)
@@ -135,8 +137,8 @@ async function unlockCommand(args: string[]): Promise<void> {
     if (arg === "--force") force = true
     else usage()
   }
-  findReview(reviewId)
   const reviewStore = store()
+  findReview(reviewStore, reviewId)
   const lock = reviewStore.inspectLock(reviewId)
   if (!lock) {
     process.stdout.write(`No active lock for review ${reviewId}.\n`)
