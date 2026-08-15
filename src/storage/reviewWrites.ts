@@ -9,12 +9,15 @@ import { newReviewId } from "../repository.js"
 import { intentValues, LEGACY_SESSION_ID, sessionValue, type BeginReviewRequest, type BeginReviewResult, type CompleteReviewRequest } from "../review.js"
 import { previousIgnored } from "./reviewReads.js"
 import { resolveMarkers } from "./reviewLifecycle.js"
+import { normalizeLanes, validateFindingOwnership } from "../lanes.js"
+import type { LaneResult } from "../review.js"
 
 function now(): string {
   return new Date().toISOString()
 }
 
 export function begin(options: DatabaseOptions, request: BeginReviewRequest): BeginReviewResult {
+  const lanes = normalizeLanes(request.lanes, request.intent !== undefined && request.intent !== null)
   return withDatabase(options, (database) => {
     database.exec("BEGIN IMMEDIATE")
     try {
@@ -30,8 +33,9 @@ export function begin(options: DatabaseOptions, request: BeginReviewRequest): Be
         ? database.prepare("SELECT fencing_token, acquired_at FROM review_locks WHERE review_id = ?").get(existing.id) as { fencing_token: string; acquired_at: string } | undefined
         : undefined
       if (existing && lock) {
+        const activeLanes = database.prepare("SELECT lane FROM review_round_lanes WHERE review_id = ? AND round_id = (SELECT pending_round_id FROM review_locks WHERE review_id = ?) AND status IS NULL ORDER BY lane").all(existing.id, existing.id) as Array<{ lane: string }>
         database.exec("COMMIT")
-        return { reviewId: existing.id, locked: true, acquiredAt: lock.acquired_at, previousIgnored: [] }
+        return { reviewId: existing.id, locked: true, acquiredAt: lock.acquired_at, previousIgnored: [], lanes: activeLanes.map((lane) => lane.lane) }
       }
       let projectId: number
       if (project) {
@@ -100,8 +104,9 @@ export function begin(options: DatabaseOptions, request: BeginReviewRequest): Be
         )
       }
       database.prepare("UPDATE reviews SET current_intent_type = ?, current_intent_ref = ?, updated_at = ? WHERE id = ?").run(intentType, intentRef, timestamp, stableReviewId)
-      const previousRows = previousIgnored(database, stableReviewId)
+      const previousRows = previousIgnored(database, stableReviewId, lanes)
       const fencingToken = randomUUID()
+      const roundId = randomUUID()
       const sessionID = sessionValue(request.sessionID)
       database.prepare("INSERT INTO review_locks (review_id, fencing_token, acquired_at, session_id) VALUES (?, ?, ?, ?)").run(
         stableReviewId,
@@ -109,14 +114,25 @@ export function begin(options: DatabaseOptions, request: BeginReviewRequest): Be
         timestamp,
         sessionID ?? LEGACY_SESSION_ID,
       )
+      database.prepare("UPDATE review_locks SET pending_round_id = ? WHERE review_id = ? AND fencing_token = ?").run(roundId, stableReviewId, fencingToken)
+      for (const lane of lanes) {
+        database.prepare("INSERT INTO review_round_lanes (round_id, review_id, lane, status, failure_reason, created_at, updated_at) VALUES (?, ?, ?, NULL, NULL, ?, ?)").run(
+          roundId,
+          stableReviewId,
+          lane,
+          timestamp,
+          timestamp,
+        )
+      }
       database.exec("COMMIT")
       return {
         reviewId: stableReviewId,
-        roundId: randomUUID(),
+        roundId,
         fencingToken,
         acquiredAt: timestamp,
         locked: false,
         previousIgnored: previousRows,
+        lanes,
       }
     } catch (error) {
       try { database.exec("ROLLBACK") } catch { /* retain original error */ }
@@ -129,8 +145,19 @@ export function complete(options: DatabaseOptions, request: CompleteReviewReques
   return withDatabase(options, (database) => {
     database.exec("BEGIN IMMEDIATE")
     try {
+      const laneRows = database.prepare("SELECT lane, status, failure_reason FROM review_round_lanes WHERE round_id = ? AND review_id = ? ORDER BY lane").all(request.roundId, request.reviewId) as Array<{
+        lane: string
+        status: "completed" | "failed" | null
+        failure_reason: string | null
+      }>
+      const laneResults = validateLaneResults(request.laneResults, laneRows)
       const payload = normalizeRoundPayload(request.validFindings, request.ignoredFindings, request.uncertainties)
-      const payloadHash = hashRoundPayload(payload)
+      if (laneRows.length > 0) {
+        for (const finding of [...payload.validFindings, ...payload.ignoredFindings]) {
+          validateFindingOwnership(finding.category, finding.sourceAgents, laneRows.map((row) => row.lane))
+        }
+      }
+      const payloadHash = hashRoundPayload(laneRows.length === 0 ? payload : { ...payload, laneResults })
       const existingRound = database.prepare("SELECT payload_hash, completed_session_id FROM review_rounds WHERE id = ? AND review_id = ?").get(request.roundId, request.reviewId) as {
         payload_hash: string
         completed_session_id: string | null
@@ -185,6 +212,16 @@ export function complete(options: DatabaseOptions, request: CompleteReviewReques
         completedAt,
         requestSessionID,
       )
+      for (const result of laneResults) {
+        database.prepare("UPDATE review_round_lanes SET status = ?, failure_reason = ?, updated_at = ? WHERE round_id = ? AND review_id = ? AND lane = ?").run(
+          result.status,
+          result.failureReason ?? null,
+          completedAt,
+          request.roundId,
+          request.reviewId,
+          result.lane,
+        )
+      }
       const uncertaintyIds: number[] = []
       for (let index = 0; index < payload.uncertainties.length; index += 1) {
         const uncertainty = payload.uncertainties[index]
@@ -210,4 +247,20 @@ export function complete(options: DatabaseOptions, request: CompleteReviewReques
       throw error
     }
   })
+}
+
+function validateLaneResults(requested: LaneResult[] | undefined, rows: Array<{ lane: string; status: "completed" | "failed" | null; failure_reason: string | null }>): LaneResult[] {
+  if (rows.length === 0) return requested ?? []
+  if (!requested) throw new Error("laneResults are required for this review round")
+  if (requested.length !== rows.length) throw new Error("laneResults must account for every requested lane exactly once")
+  const rowNames = new Set(rows.map((row) => row.lane))
+  const resultNames = new Set<string>()
+  for (const result of requested) {
+    if (typeof result.lane !== "string" || !rowNames.has(result.lane)) throw new Error(`lane result ${result.lane} is not requested for this review round`)
+    if (resultNames.has(result.lane)) throw new Error("laneResults must not contain duplicates")
+    resultNames.add(result.lane)
+    if (result.status !== "completed" && result.status !== "failed") throw new Error("lane result status is invalid")
+  }
+  if (resultNames.size !== rowNames.size) throw new Error("laneResults must account for every requested lane exactly once")
+  return rows.map((row) => requested.find((result) => result.lane === row.lane) as LaneResult)
 }

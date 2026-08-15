@@ -1,12 +1,6 @@
 import type { Event } from "@opencode-ai/sdk"
 import type { ReviewLifecycle } from "./storage/lifecycle.js"
-
-const SPECIALIST_TYPES = new Set([
-  "mmar_correctness",
-  "mmar_codestyle",
-  "mmar_testing",
-  "mmar_intent",
-])
+import { laneForSpecialist } from "./lanes.js"
 
 export type ToolBeforeInput = {
   tool: string
@@ -30,7 +24,7 @@ function isRecord(value: unknown): value is UnknownRecord {
 
 function specialistType(args: unknown): string | undefined {
   if (!isRecord(args) || typeof args.subagent_type !== "string") return undefined
-  return SPECIALIST_TYPES.has(args.subagent_type) ? args.subagent_type : undefined
+  return laneForSpecialist(args.subagent_type) ? args.subagent_type : undefined
 }
 
 function sessionIDFromEvent(event: Event): string | undefined {
@@ -48,8 +42,14 @@ export class ReviewLifecycleHooks {
   beforeTool(input: ToolBeforeInput, args: unknown): void {
     // OpenCode invokes this before-hook with the calling session; throwing here aborts task dispatch.
     if (input.tool !== "task" || specialistType(args) === undefined) return
+    const specialist = specialistType(args)
     if (!this.lifecycle.ownsActiveLock(input.sessionID)) {
       throw new Error("MMAR specialist dispatch requires an active review lock owned by this session")
+    }
+    const activeReview = this.lifecycle.activeReviewForSession(input.sessionID)
+    const lane = specialist === undefined ? undefined : laneForSpecialist(specialist)
+    if (!activeReview || !lane || !activeReview.lanes.includes(lane.name)) {
+      throw new Error("MMAR specialist dispatch is outside the active review lanes")
     }
   }
 

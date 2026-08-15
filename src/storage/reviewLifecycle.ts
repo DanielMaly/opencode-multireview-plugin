@@ -17,12 +17,14 @@ export function hasActiveLockOwnedBySession(options: DatabaseOptions, sessionID:
   })
 }
 
-export function activeReviewForSession(options: DatabaseOptions, sessionID: string): { reviewId: string } | undefined {
+export function activeReviewForSession(options: DatabaseOptions, sessionID: string): { reviewId: string; lanes: string[] } | undefined {
   const owner = sessionValue(sessionID)
   if (!owner) return undefined
   return withDatabase(options, (database) => {
     const row = database.prepare("SELECT review_id FROM review_locks WHERE session_id = ? LIMIT 1").get(owner) as { review_id: string } | undefined
-    return row ? { reviewId: row.review_id } : undefined
+    if (!row) return undefined
+    const lanes = database.prepare("SELECT lane FROM review_round_lanes WHERE review_id = ? AND round_id = (SELECT pending_round_id FROM review_locks WHERE review_id = ?) AND status IS NULL ORDER BY lane").all(row.review_id, row.review_id) as Array<{ lane: string }>
+    return { reviewId: row.review_id, lanes: lanes.map((lane) => lane.lane) }
   })
 }
 
@@ -83,5 +85,21 @@ export function releaseIncompleteDiagnosticMarker(options: DatabaseOptions, requ
 }
 
 export function unlock(options: DatabaseOptions, reviewId: string, fencingToken: string): boolean {
-  return withDatabase(options, (database) => database.prepare("DELETE FROM review_locks WHERE review_id = ? AND fencing_token = ?").run(reviewId, fencingToken).changes > 0)
+  return withDatabase(options, (database) => {
+    database.exec("BEGIN IMMEDIATE")
+    try {
+      const lock = database.prepare("SELECT pending_round_id FROM review_locks WHERE review_id = ? AND fencing_token = ?").get(reviewId, fencingToken) as { pending_round_id: string | null } | undefined
+      if (!lock) {
+        database.exec("COMMIT")
+        return false
+      }
+      database.prepare("DELETE FROM review_round_lanes WHERE review_id = ? AND round_id = ?").run(reviewId, lock.pending_round_id)
+      const deleted = database.prepare("DELETE FROM review_locks WHERE review_id = ? AND fencing_token = ?").run(reviewId, fencingToken).changes > 0
+      database.exec("COMMIT")
+      return deleted
+    } catch (error) {
+      try { database.exec("ROLLBACK") } catch { /* retain original error */ }
+      throw error
+    }
+  })
 }

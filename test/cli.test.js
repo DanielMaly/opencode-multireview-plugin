@@ -119,6 +119,7 @@ function completeReview(context) {
     roundId: first.roundId,
     fencingToken: first.fencingToken,
     intent: { type: "jira", ref: "MMAR-7" },
+    laneResults: ["correctness", "codestyle", "testing", "intent"].map((lane) => ({ lane, status: "completed" })),
     validFindings: [
       { disposition: "valid", severity: "CRITICAL", category: "CORRECTNESS", title: "Critical", bodyMarkdown: "Critical body", sourceAgents: ["correctness"] },
       { disposition: "valid", severity: "HIGH", category: "CODESTYLE", title: "Style", bodyMarkdown: "Style body", sourceAgents: ["codestyle"], blockedByUncertaintyIds: ["1"] },
@@ -131,12 +132,16 @@ function completeReview(context) {
   return first
 }
 
+function completeDefault(store, review, extra = {}) {
+  return store.complete({ ...review, ...extra, laneResults: ["correctness", "codestyle", "testing"].map((lane) => ({ lane, status: "completed" })) })
+}
+
 test("list text and JSON are stable and export selects latest or exact historical rounds", () => {
   const context = fixture()
   try {
     const first = completeReview(context)
     const second = context.store().begin({ identity: context.identity, target: context.target })
-    context.store().complete({ reviewId: second.reviewId, roundId: second.roundId, fencingToken: second.fencingToken, validFindings: [{ disposition: "valid", severity: "LOW", category: "TESTING", title: "Latest", bodyMarkdown: "Latest body", sourceAgents: ["testing"] }] })
+    completeDefault(context.store(), second, { validFindings: [{ disposition: "valid", severity: "LOW", category: "TESTING", title: "Latest", bodyMarkdown: "Latest body", sourceAgents: ["testing"] }] })
 
     const text = run(["list", "--all-projects"], context.env)
     assert.equal(text.status, 0)
@@ -169,9 +174,9 @@ test("default list is repository-scoped and excludes another project", () => {
       baseCommit: "base",
     }
     const current = context.store().begin({ identity: currentProjectIdentity, target: { kind: "custom", key: "current", label: "Current project" } })
-    context.store().complete({ reviewId: current.reviewId, roundId: current.roundId, fencingToken: current.fencingToken })
+    completeDefault(context.store(), current)
     const other = context.store().begin({ identity: context.identity, target: { kind: "custom", key: "other", label: "Other project" } })
-    context.store().complete({ reviewId: other.reviewId, roundId: other.roundId, fencingToken: other.fencingToken })
+    completeDefault(context.store(), other)
 
     const text = run(["list"], context.env)
     assert.equal(text.status, 0)
@@ -201,7 +206,15 @@ test("golden export covers metadata, empty sections, categories, Wontfix, uncert
       "- Base ref: main",
       "- Base commit: base",
       `- Completed at: ${context.store().getRound(first.reviewId, first.roundId).completedAt}`,
+      "- Lanes: codestyle, correctness, intent, testing",
       "- Intent reference: jira:MMAR-7",
+      "",
+      "## Lane Outcomes",
+      "",
+      "- codestyle: completed",
+      "- correctness: completed",
+      "- intent: completed",
+      "- testing: completed",
       "",
       "## Valid Findings",
       "",
@@ -255,7 +268,7 @@ test("empty rounds use deterministic section placeholders", () => {
   const context = fixture()
   try {
     const first = context.store().begin({ identity: context.identity, target: context.target })
-    context.store().complete({ reviewId: first.reviewId, roundId: first.roundId, fencingToken: first.fencingToken })
+    completeDefault(context.store(), first)
     const result = run(["export", first.reviewId], context.env)
     assert.equal(result.status, 0)
     assert.match(result.stdout, /_No valid findings\._/)

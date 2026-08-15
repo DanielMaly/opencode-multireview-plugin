@@ -4,6 +4,7 @@ import type {
   NormalizedFinding,
 } from "./findings.js"
 import type { NormalizedTarget, ResolvedReviewIdentity } from "./repository.js"
+import type { ReviewLane } from "./lanes.js"
 
 export const intentTypes = ["jira", "local_file"] as const
 export type IntentType = (typeof intentTypes)[number]
@@ -17,7 +18,16 @@ export interface BeginReviewRequest {
   identity: ResolvedReviewIdentity
   target: NormalizedTarget
   intent?: IntentReference | null
+  lanes?: ReviewLane[]
   sessionID?: string
+}
+
+export type LaneResultStatus = "completed" | "failed"
+
+export interface LaneResult {
+  lane: ReviewLane
+  status: LaneResultStatus
+  failureReason?: string
 }
 
 export interface IgnoredSnapshot extends NormalizedFinding {
@@ -31,11 +41,13 @@ export type BeginReviewResult = {
   fencingToken: string
   acquiredAt: string
   previousIgnored: IgnoredSnapshot[]
+  lanes: ReviewLane[]
 } | {
   reviewId: string
   locked: true
   acquiredAt: string
   previousIgnored: []
+  lanes?: ReviewLane[]
 }
 
 export type ReviewScope = Pick<ResolvedReviewIdentity, "projectKey" | "worktreePath">
@@ -46,6 +58,7 @@ export interface CompleteReviewRequest {
   fencingToken: string
   sessionID?: string
   intent?: IntentReference | null
+  laneResults?: LaneResult[]
   validFindings?: FindingInput[]
   ignoredFindings?: FindingInput[]
   uncertainties?: IntentUncertainty[]
@@ -96,6 +109,8 @@ export interface ReviewRound {
   ordinal: number
   payloadHash: string
   intent?: IntentReference
+  lanes?: ReviewLane[]
+  laneResults?: LaneResult[]
   completedAt: string
   validFindings: NormalizedFinding[]
   ignoredFindings: IgnoredSnapshot[]

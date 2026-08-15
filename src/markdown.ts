@@ -56,15 +56,18 @@ export function serializeReviewMarkdown(metadata: ReviewMarkdownMetadata, summar
     `- Base ref: ${text(metadata.baseRef)}`,
     `- Base commit: ${text(metadata.baseCommit)}`,
     `- Completed at: ${round.completedAt}`,
+    ...(round.lanes ? [`- Lanes: ${round.lanes.join(", ")}`] : []),
     ...(round.intent ? [`- Intent reference: ${round.intent.type}:${text(round.intent.ref)}`] : []),
   ].join("\n")
 
   const valid = round.validFindings.map((finding) => findingBlock(finding, false))
   const uncertainties = round.uncertainties.map((uncertainty, index) => uncertaintyBlock(uncertainty, index + 1))
   const ignored = round.ignoredFindings.map((finding) => findingBlock(finding, true))
+  const laneResults = round.laneResults?.map((result) => `- ${result.lane}: ${result.status}${result.failureReason ? ` (${text(result.failureReason)})` : ""}`) ?? []
 
   return [
     header,
+    ...(laneResults.length > 0 ? ["", "## Lane Outcomes", "", ...laneResults] : []),
     "",
     section("Valid Findings", valid, "_No valid findings._"),
     "",

@@ -5,6 +5,7 @@ import { canonicalPath, normalizeTarget, resolveExplicitGitWorktree, resolveRepo
 import { intentTypes, LEGACY_SESSION_ID } from "./review.js"
 import type { DatabaseOptions } from "./storage/database.js"
 import type { ReviewStore } from "./storage/reviews.js"
+import { laneNames, normalizeLanes } from "./lanes.js"
 
 const z = tool.schema
 
@@ -27,7 +28,7 @@ const intentSchema = z.object({
 const findingSchema = z.object({
   disposition: z.enum(findingDispositions),
   severity: z.enum(findingSeverities),
-  category: z.enum(findingCategories),
+  category: z.string().trim().min(1),
   title: z.string(),
   bodyMarkdown: z.string(),
   wontfix: z.string().optional(),
@@ -49,6 +50,7 @@ const beginArgsSchema = z.object({
   baseRef: z.string().trim().min(1),
   requestScope: z.string().trim().min(1),
   intent: intentSchema.nullable().optional(),
+  lanes: z.array(z.string()).optional(),
 }).strict()
 
 const completeArgsSchema = z.object({
@@ -56,6 +58,11 @@ const completeArgsSchema = z.object({
   roundId: idSchema,
   fencingToken: idSchema,
   intent: intentSchema.nullable().optional(),
+  laneResults: z.array(z.object({
+    lane: z.string().trim().min(1),
+    status: z.enum(["completed", "failed"]),
+    failureReason: z.string().trim().min(1).optional(),
+  }).strict()).optional(),
   validFindings: z.array(findingSchema).optional(),
   ignoredFindings: z.array(findingSchema).optional(),
   uncertainties: z.array(uncertaintySchema).optional(),
@@ -126,13 +133,15 @@ export function createMmarTools(databaseOptions: DatabaseOptions = {}): Record<s
       const worktree = trustedWriteRepository(context)
       const identity = resolveReviewIdentity(worktree, input.baseRef)
       const target = normalizeTarget(input.target as TargetInput, identity)
-      const review = (await getStore()).begin({ identity, target, intent: input.intent ?? undefined, sessionID: context.sessionID })
+      const lanes = normalizeLanes(input.lanes, input.intent !== undefined && input.intent !== null)
+      const review = (await getStore()).begin({ identity, target, intent: input.intent ?? undefined, lanes, sessionID: context.sessionID })
       return json({
         ...review,
         requestScope: input.requestScope,
         target,
         baseRef: identity.baseRef,
         baseCommit: identity.baseCommit,
+        supportedLanes: laneNames(),
         repository: {
           rootPath: identity.rootPath,
           worktreePath: identity.worktreePath,
@@ -158,6 +167,7 @@ export function createMmarTools(databaseOptions: DatabaseOptions = {}): Record<s
         fencingToken: input.fencingToken,
         sessionID: context.sessionID,
         intent: input.intent ?? undefined,
+        laneResults: input.laneResults,
         validFindings: input.validFindings ?? [],
         ignoredFindings: input.ignoredFindings ?? [],
         uncertainties: input.uncertainties ?? [],

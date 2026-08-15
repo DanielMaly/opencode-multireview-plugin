@@ -39,6 +39,10 @@ function taskInput(sessionID) {
   return { tool: "task", sessionID, callID: "call" }
 }
 
+function completeStore(store, request) {
+  return store.complete({ ...request, laneResults: ["correctness", "codestyle", "testing"].map((lane) => ({ lane, status: "completed" })) })
+}
+
 function error(sessionID) {
   return { type: "session.error", properties: sessionID === undefined ? {} : { sessionID } }
 }
@@ -59,7 +63,7 @@ test("guards specialist dispatches by the active session lock and permits unrela
     assert.doesNotThrow(() => hooks.beforeTool(taskInput(owner), { subagent_type: "other_agent" }))
     assert.equal(lifecycle.activeReviewForSession(contender), undefined)
 
-    store.complete({ reviewId: review.reviewId, roundId: review.roundId, fencingToken: review.fencingToken })
+    completeStore(store, { reviewId: review.reviewId, roundId: review.roundId, fencingToken: review.fencingToken })
     assert.throws(() => hooks.beforeTool(taskInput(owner), { subagent_type: "mmar_correctness" }), /active review lock/)
   } finally {
     rmSync(directory, { recursive: true, force: true })
@@ -84,7 +88,7 @@ test("ignores ordinary idle and records one diagnostic per session error", async
     assert.deepEqual(diagnostics.map(({ event }) => event), ["session.error"])
     assert.equal(lifecycle.activeReviewForSession(sessionID).reviewId, review.reviewId)
 
-    assert.doesNotThrow(() => store.complete({
+    assert.doesNotThrow(() => completeStore(store, {
       reviewId: review.reviewId,
       roundId: review.roundId,
       fencingToken: review.fencingToken,
