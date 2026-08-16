@@ -14,7 +14,7 @@ Do not dispatch hidden lane specialists directly. Do not create or update a repo
 1. Normalize the requested changeset as one supported target: pull request, branch, commit, uncommitted worktree, or explicit custom changeset.
 2. Require a Git-resolvable base ref. Stop with an actionable error if it cannot be resolved.
 3. Summarize the requested review as a compact `requestScope`. Do not embed the full diff as metadata.
-4. Choose lanes only when the user requests a narrower review.
+4. Choose lanes only when the user requests a narrower review, or when the scope of the change is small enough that a swarm of reviewer agents does not make sense.
 5. Resolve optional intent before delegation.
 
 Supported lanes are:
@@ -28,9 +28,9 @@ Omit `lanes` for the default review: correctness, codestyle, and testing, plus i
 
 ## Resolve optional intent
 
-Intent may come from Jira or an exact user-supplied local file path.
+Intent may come from a ticket tracking system or an exact user-supplied local file path.
 
-- If the user supplies Jira intent, resolve it before delegation using the authenticated Jira integration available in the current environment.
+- If the user supplies intent via a ticket / issue reference, resolve it before delegation using the integration available in your environment.
 - If the user supplies a local source, read it from the exact supplied path.
 - On success, pass the source content to the orchestrator and include its typed reference in the request.
 - On failure, pass the typed reference and a concise resolution error. Do not invent source content or silently remove a selected intent lane.
@@ -94,10 +94,5 @@ For a human-facing Markdown projection, use:
 opencode-multireview export <review-id> [--round <round-id>] [--output <path>]
 ```
 
-SQLite history and plugin tools are the canonical persistence layer. Do not create, read, modify, or use `REVIEW_FINDINGS.md`, other agent Markdown files, or git excludes as an alternate persistence mechanism.
+SQLite history and plugin tools are the canonical persistence layer. 
 
-## Plugin discovery
-
-When the plugin is loaded, its bundled skill and agents are discovered automatically. Global or project skill installation is only an optional fallback for environments where the plugin is not loaded.
-
-Third-party `@multireview` packages and removed legacy `multireview*` agent or CLI aliases are outside this plugin.
