@@ -1,6 +1,6 @@
 import type { Event } from "@opencode-ai/sdk"
 import type { ReviewLifecycle } from "./storage/lifecycle.js"
-import { laneForSpecialist } from "./lanes.js"
+import { laneForCanonicalSpecialist, type LaneDefinition } from "./lanes.js"
 
 export type ToolBeforeInput = {
   tool: string
@@ -22,9 +22,9 @@ function isRecord(value: unknown): value is UnknownRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
-function specialistType(args: unknown): string | undefined {
+function specialistType(args: unknown): LaneDefinition | undefined {
   if (!isRecord(args) || typeof args.subagent_type !== "string") return undefined
-  return laneForSpecialist(args.subagent_type) ? args.subagent_type : undefined
+  return laneForCanonicalSpecialist(args.subagent_type)
 }
 
 function sessionIDFromEvent(event: Event): string | undefined {
@@ -41,14 +41,16 @@ export class ReviewLifecycleHooks {
 
   beforeTool(input: ToolBeforeInput, args: unknown): void {
     // OpenCode invokes this before-hook with the calling session; throwing here aborts task dispatch.
+    if (input.tool !== "task") return
     const specialist = specialistType(args)
-    if (input.tool !== "task" || specialist === undefined) return
-    if (!this.lifecycle.ownsActiveLock(input.sessionID)) {
+    if (!specialist) return
+    const activeReview = this.lifecycle.activeReviewForSession(input.sessionID)
+    if (!activeReview) {
       throw new Error("MMAR specialist dispatch requires an active review lock owned by this session")
     }
-    const activeReview = this.lifecycle.activeReviewForSession(input.sessionID)
-    const lane = laneForSpecialist(specialist)
-    if (!activeReview || (activeReview.laneAware && (!lane || !activeReview.lanes.includes(lane.name)))) {
+    // laneAware: false is a migration-only compatibility path for locks created before migration 003.
+    const laneIsSelected = activeReview.lanes.includes(specialist.name)
+    if (activeReview.laneAware && !laneIsSelected) {
       throw new Error("MMAR specialist dispatch is outside the active review lanes")
     }
   }

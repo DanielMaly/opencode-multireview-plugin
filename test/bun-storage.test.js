@@ -36,7 +36,7 @@ function validFinding(title = "Keep this") {
   }
 }
 
-test("Bun completes a durable no-intent round", { skip: !process.versions.bun }, () => {
+test("Bun completes a durable no-intent round", () => {
   const directory = mkdtempSync(join(tmpdir(), "opencode-multireview-bun-"))
   try {
     const store = new ReviewStore({ databasePath: join(directory, "reviews.sqlite") })
@@ -50,6 +50,7 @@ test("Bun completes a durable no-intent round", { skip: !process.versions.bun },
       reviewId: review.reviewId,
       roundId: review.roundId,
       fencingToken: review.fencingToken,
+      laneResults: ["correctness", "codestyle", "testing"].map((lane) => ({ lane, status: "completed" })),
     }), { roundId: review.roundId, idempotent: false })
     assert.equal(store.getRound(review.reviewId)?.ordinal, 1)
     assert.equal(store.getRound(review.reviewId)?.intent, undefined)
@@ -58,7 +59,7 @@ test("Bun completes a durable no-intent round", { skip: !process.versions.bun },
   }
 })
 
-test("Bun normalizes no-row reads to undefined", { skip: !process.versions.bun }, () => {
+test("Bun normalizes no-row reads to undefined", () => {
   const directory = mkdtempSync(join(tmpdir(), "opencode-multireview-bun-no-row-"))
   const databasePath = join(directory, "reviews.sqlite")
   try {
@@ -70,14 +71,19 @@ test("Bun normalizes no-row reads to undefined", { skip: !process.versions.bun }
     assert.equal(store.inspectLock("missing"), undefined)
     const review = store.begin({ identity: identity(directory), target: target("no-row") })
     assert.equal(store.getRound(review.reviewId), undefined)
-    store.complete({ reviewId: review.reviewId, roundId: review.roundId, fencingToken: review.fencingToken })
+    store.complete({
+      reviewId: review.reviewId,
+      roundId: review.roundId,
+      fencingToken: review.fencingToken,
+      laneResults: ["correctness", "codestyle", "testing"].map((lane) => ({ lane, status: "completed" })),
+    })
     assert.equal(store.inspectLock(review.reviewId), undefined)
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }
 })
 
-test("Bun preserves contention and fencing behavior for replaced tokens", { skip: !process.versions.bun }, () => {
+test("Bun preserves contention and fencing behavior for replaced tokens", () => {
   const directory = mkdtempSync(join(tmpdir(), "opencode-multireview-bun-lock-"))
   const databasePath = join(directory, "reviews.sqlite")
   try {
@@ -92,7 +98,7 @@ test("Bun preserves contention and fencing behavior for replaced tokens", { skip
     const replacement = store.begin({ identity: identity(directory), target: target("lock") })
     assert.notEqual(replacement.fencingToken, first.fencingToken)
     assert.throws(
-      () => store.complete({ reviewId: first.reviewId, roundId: first.roundId, fencingToken: first.fencingToken, validFindings: [validFinding()] }),
+      () => store.complete({ reviewId: first.reviewId, roundId: first.roundId, fencingToken: first.fencingToken, laneResults: ["correctness", "codestyle", "testing"].map((lane) => ({ lane, status: "completed" })), validFindings: [validFinding()] }),
       /stale or missing/,
     )
     assert.deepEqual(store.inspectLock(first.reviewId), {
@@ -104,6 +110,7 @@ test("Bun preserves contention and fencing behavior for replaced tokens", { skip
       reviewId: replacement.reviewId,
       roundId: replacement.roundId,
       fencingToken: replacement.fencingToken,
+      laneResults: ["correctness", "codestyle", "testing"].map((lane) => ({ lane, status: "completed" })),
       validFindings: [validFinding("Replacement")],
     }), { roundId: replacement.roundId, idempotent: false })
     assert.equal(store.inspectLock(first.reviewId), undefined)
@@ -112,7 +119,7 @@ test("Bun preserves contention and fencing behavior for replaced tokens", { skip
   }
 })
 
-test("Bun rolls back failed completion and preserves its lock", { skip: !process.versions.bun }, () => {
+test("Bun rolls back failed completion and preserves its lock", () => {
   const directory = mkdtempSync(join(tmpdir(), "opencode-multireview-bun-rollback-"))
   const databasePath = join(directory, "reviews.sqlite")
   try {
@@ -123,7 +130,7 @@ test("Bun rolls back failed completion and preserves its lock", { skip: !process
     database.close()
 
     assert.throws(
-      () => store.complete({ reviewId: review.reviewId, roundId: review.roundId, fencingToken: review.fencingToken, validFindings: [validFinding()] }),
+      () => store.complete({ reviewId: review.reviewId, roundId: review.roundId, fencingToken: review.fencingToken, laneResults: ["correctness", "codestyle", "testing"].map((lane) => ({ lane, status: "completed" })), validFindings: [validFinding()] }),
       /forced completion failure/,
     )
     assert.equal(store.getRound(review.reviewId), undefined)

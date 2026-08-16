@@ -25,11 +25,12 @@ export function laneByName(name: string): LaneDefinition | undefined {
   return laneRegistry.find((lane) => lane.name === name)
 }
 
-export function laneForSpecialist(agent: string): LaneDefinition | undefined {
+export function laneForCanonicalSpecialist(agent: string): LaneDefinition | undefined {
   return laneRegistry.find((lane) => lane.specialistAgent === agent)
 }
 
-export function laneForSourceAgent(agent: string): LaneDefinition | undefined {
+// Short aliases are accepted only in sourceAgents provenance, never for task dispatch.
+export function laneForSourceProvenance(agent: string): LaneDefinition | undefined {
   return laneRegistry.find((lane) => lane.specialistAgent === agent || lane.name === agent)
 }
 
@@ -64,7 +65,7 @@ export function validateFindingOwnership(category: string, sourceAgents: string[
   const selected = lanes.map(laneByName).filter((lane): lane is LaneDefinition => lane !== undefined)
   if (!selected.some((lane) => lane.category === category)) throw new Error(`finding category ${category} is outside the requested MMAR lanes`)
   for (const sourceAgent of sourceAgents) {
-    const sourceLane = laneForSourceAgent(sourceAgent)
+    const sourceLane = laneForSourceProvenance(sourceAgent)
     if (sourceLane && !lanes.includes(sourceLane.name)) throw new Error(`finding source agent ${sourceAgent} is outside the requested MMAR lanes`)
   }
 }

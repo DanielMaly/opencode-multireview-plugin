@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { randomUUID } from "node:crypto"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
@@ -9,6 +9,7 @@ import { laneRegistry } from "../dist/lanes.js"
 import { PersistentReviewLifecycle } from "../dist/storage/lifecycle.js"
 import { ReviewStore } from "../dist/storage/reviews.js"
 import { openDatabase } from "../dist/storage/database.js"
+import { REVIEWER_REGISTRY } from "../dist/defaults.js"
 
 function identity() {
   return { projectKey: "lane-project", rootPath: "/lane", worktreePath: "/lane", headCommit: "head", isGit: false, baseRef: "main", baseCommit: "base" }
@@ -126,6 +127,14 @@ test("enforces finding ownership while allowing canonical, alias, and unknown pr
     }), /outside the requested MMAR lanes/)
     store.unlock(omittedAgent.reviewId, omittedAgent.fencingToken)
 
+    const omittedAlias = begin(store, ["correctness"])
+    assert.throws(() => store.complete({
+      ...omittedAlias,
+      laneResults: results(["correctness"]),
+      validFindings: [{ disposition: "valid", severity: "HIGH", category: "CORRECTNESS", title: "wrong alias", bodyMarkdown: "evidence", sourceAgents: ["testing"] }],
+    }), /outside the requested MMAR lanes/)
+    store.unlock(omittedAlias.reviewId, omittedAlias.fencingToken)
+
     for (const sourceAgent of ["mmar_correctness", "correctness", "custom_agent"]) {
       const review = begin(store, ["correctness"])
       assert.doesNotThrow(() => store.complete({
@@ -206,6 +215,53 @@ test("accepts a registry-defined future lane through dispatch and completion", (
   } finally {
     laneRegistry.splice(laneRegistry.indexOf(futureLane), 1)
     rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test("requires the exact intent reference for required-intent lanes", () => {
+  const directory = mkdtempSync(join(tmpdir(), "opencode-mmar-lanes-intent-invariant-"))
+  try {
+    const store = new ReviewStore({ databasePath: join(directory, "reviews.sqlite") })
+    const review = begin(store, ["intent"], { type: "jira", ref: "MMAR-4" })
+    const completion = { ...review, laneResults: results(["intent"]) }
+    assert.throws(() => store.complete(completion), /intent reference must match/)
+    assert.throws(() => store.complete({ ...completion, intent: { type: "jira", ref: "MMAR-5" } }), /intent reference must match/)
+    assert.doesNotThrow(() => store.complete({ ...completion, intent: { type: "jira", ref: "MMAR-4" } }))
+  } finally { rmSync(directory, { recursive: true, force: true }) }
+})
+
+test("completed round retries do not inspect or change a newer active round", () => {
+  const directory = mkdtempSync(join(tmpdir(), "opencode-mmar-lanes-retry-binding-"))
+  try {
+    const databasePath = join(directory, "reviews.sqlite")
+    const store = new ReviewStore({ databasePath })
+    const first = beginWithKey(store, "retry-binding", ["correctness"])
+    const firstRequest = { ...first, laneResults: results(["correctness"]) }
+    store.complete(firstRequest)
+    const second = beginWithKey(store, "retry-binding", ["testing"])
+    const database = openDatabase({ databasePath })
+    const beforeLock = database.prepare("SELECT fencing_token, pending_round_id FROM review_locks WHERE review_id = ?").get(second.reviewId)
+    const beforeLanes = database.prepare("SELECT round_id, lane, status FROM review_round_lanes WHERE review_id = ? ORDER BY round_id, lane").all(second.reviewId)
+    database.close()
+
+    assert.deepEqual(store.complete(firstRequest), { roundId: first.roundId, idempotent: true })
+
+    const afterDatabase = openDatabase({ databasePath })
+    assert.deepEqual(afterDatabase.prepare("SELECT fencing_token, pending_round_id FROM review_locks WHERE review_id = ?").get(second.reviewId), beforeLock)
+    assert.deepEqual(afterDatabase.prepare("SELECT round_id, lane, status FROM review_round_lanes WHERE review_id = ? ORDER BY round_id, lane").all(second.reviewId), beforeLanes)
+    afterDatabase.close()
+  } finally { rmSync(directory, { recursive: true, force: true }) }
+})
+
+test("registered lanes have installed specialists and documented lane metadata", () => {
+  const orchestrator = readFileSync(new URL("../assets/agents/mmar_orchestrator.md", import.meta.url), "utf8")
+  const skill = readFileSync(new URL("../assets/skills/mmar/SKILL.md", import.meta.url), "utf8")
+  for (const lane of laneRegistry) {
+    assert.equal(REVIEWER_REGISTRY[lane.name]?.name, lane.specialistAgent)
+    assert.match(skill, new RegExp(`\\b${lane.name}\\b`))
+    assert.match(skill, new RegExp(`\\b${lane.category}\\b`))
+    assert.match(orchestrator, new RegExp(`\\b${lane.name}\\b`))
+    assert.match(orchestrator, new RegExp(`\\b${lane.category}\\b`))
   }
 })
 

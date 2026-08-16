@@ -9,7 +9,7 @@ import { newReviewId } from "../repository.js"
 import { intentValues, LEGACY_SESSION_ID, sessionValue, type BeginReviewRequest, type BeginReviewResult, type CompleteReviewRequest } from "../review.js"
 import { previousIgnored } from "./reviewReads.js"
 import { activeLaneSnapshot, resolveMarkers } from "./reviewLifecycle.js"
-import { normalizeLanes, validateFindingOwnership } from "../lanes.js"
+import { laneByName, normalizeLanes, validateFindingOwnership } from "../lanes.js"
 import type { LaneResult } from "../review.js"
 
 function now(): string {
@@ -145,16 +145,29 @@ export function complete(options: DatabaseOptions, request: CompleteReviewReques
   return withDatabase(options, (database) => {
     database.exec("BEGIN IMMEDIATE")
     try {
-      const activeLock = database.prepare("SELECT fencing_token, pending_round_id FROM review_locks WHERE review_id = ?").get(request.reviewId) as { fencing_token: string; pending_round_id: string | null } | undefined
-      if (activeLock?.pending_round_id !== undefined && activeLock.pending_round_id !== null && activeLock.pending_round_id !== request.roundId) {
-        throw new Error("review round does not match the active lock pending round")
-      }
       const existingRound = database.prepare("SELECT payload_hash, completed_session_id FROM review_rounds WHERE id = ? AND review_id = ?").get(request.roundId, request.reviewId) as {
         payload_hash: string
         completed_session_id: string | null
       } | undefined
-      if (!existingRound && (!activeLock || activeLock.fencing_token !== request.fencingToken)) {
-        throw new Error("review lock fencing token is stale or missing")
+      let activeLock: {
+        fencing_token: string
+        pending_round_id: string | null
+        session_id: string
+        current_intent_type: string | null
+        current_intent_ref: string | null
+        lane_count: number
+      } | undefined
+      if (!existingRound) {
+        activeLock = database.prepare("SELECT l.fencing_token, l.pending_round_id, l.session_id, r.current_intent_type, r.current_intent_ref, (SELECT COUNT(*) FROM review_round_lanes WHERE review_id = l.review_id) AS lane_count FROM review_locks l JOIN reviews r ON r.id = l.review_id WHERE l.review_id = ?").get(request.reviewId) as typeof activeLock
+        if (!activeLock) throw new Error("review lock fencing token is stale or missing")
+        const hasMatchingLock = activeLock.fencing_token === request.fencingToken
+        if (!hasMatchingLock) throw new Error("review lock fencing token is stale or missing")
+        const hasPendingRound = activeLock.pending_round_id !== null
+        const pendingRoundMatches = activeLock.pending_round_id === request.roundId
+        const isLegacyPending = !hasPendingRound && activeLock.lane_count === 0
+        const pendingRoundMismatch = hasPendingRound && !pendingRoundMatches
+        const unsupportedMissingPendingRound = !hasPendingRound && !isLegacyPending
+        if (pendingRoundMismatch || unsupportedMissingPendingRound) throw new Error("review round does not match the active lock pending round")
       }
       const laneRows = database.prepare("SELECT lane, status, failure_reason FROM review_round_lanes WHERE round_id = ? AND review_id = ? ORDER BY lane").all(request.roundId, request.reviewId) as Array<{
         lane: string
@@ -168,25 +181,23 @@ export function complete(options: DatabaseOptions, request: CompleteReviewReques
           validateFindingOwnership(finding.category, finding.sourceAgents, laneRows.map((row) => row.lane))
         }
       }
+      let expectedIntent: { intent_type: string | null; intent_ref: string | null } | undefined
+      if (existingRound) {
+        expectedIntent = database.prepare("SELECT intent_type, intent_ref FROM review_rounds WHERE id = ? AND review_id = ?").get(request.roundId, request.reviewId) as typeof expectedIntent
+      } else if (activeLock) {
+        expectedIntent = { intent_type: activeLock.current_intent_type, intent_ref: activeLock.current_intent_ref }
+      }
+      validateRequiredLaneIntent(laneRows.map((row) => row.lane), expectedIntent, request.intent)
       const payloadHash = hashRoundPayload(laneRows.length === 0 ? payload : { ...payload, laneResults })
       if (existingRound) {
         if (existingRound.payload_hash !== payloadHash) throw new Error("round retry payload differs from the original")
         const requestSessionID = sessionValue(request.sessionID)
-        if (requestSessionID && existingRound.completed_session_id !== null && existingRound.completed_session_id !== requestSessionID) {
+        const hasRequestSession = requestSessionID !== null
+        const completedByDifferentSession = existingRound.completed_session_id !== null && existingRound.completed_session_id !== requestSessionID
+        if (hasRequestSession && completedByDifferentSession) {
           throw new Error("review lock session ownership mismatch")
         }
-        const lock = database.prepare("SELECT fencing_token, session_id FROM review_locks WHERE review_id = ?").get(request.reviewId) as {
-          fencing_token: string
-          session_id: string
-        } | undefined
-        if (lock && lock.fencing_token !== request.fencingToken) throw new Error("review lock fencing token is stale or missing")
-        const requestHasSession = requestSessionID !== null
-        const activeLockHasSessionMismatch = lock !== undefined && lock.session_id !== requestSessionID
-        const activeLockIsLegacy = lock?.session_id === LEGACY_SESSION_ID
-        if (requestHasSession && activeLockHasSessionMismatch) {
-          if (!activeLockIsLegacy) throw new Error("review lock session ownership mismatch")
-        }
-        if (requestSessionID && existingRound.completed_session_id === null) {
+        if (hasRequestSession && existingRound.completed_session_id === null) {
           database.prepare("UPDATE review_rounds SET completed_session_id = ? WHERE id = ? AND review_id = ? AND completed_session_id IS NULL").run(
             requestSessionID,
             request.roundId,
@@ -197,14 +208,13 @@ export function complete(options: DatabaseOptions, request: CompleteReviewReques
         database.exec("COMMIT")
         return { roundId: request.roundId, idempotent: true }
       }
-      const lock = database.prepare("SELECT fencing_token, session_id FROM review_locks WHERE review_id = ?").get(request.reviewId) as {
-        fencing_token: string
-        session_id: string
-      } | undefined
-      if (!lock || lock.fencing_token !== request.fencingToken) throw new Error("review lock fencing token is stale or missing")
       const requestSessionID = sessionValue(request.sessionID)
-      const isLegacyLock = lock.session_id === LEGACY_SESSION_ID
-      if (requestSessionID && !isLegacyLock && lock.session_id !== requestSessionID) throw new Error("review lock session ownership mismatch")
+      const isLegacyLock = activeLock?.session_id === LEGACY_SESSION_ID
+      const hasSessionMismatch = activeLock !== undefined && activeLock.session_id !== requestSessionID
+      const requestHasSession = requestSessionID !== null
+      const sessionMismatchWithBoundLock = requestHasSession && hasSessionMismatch
+      const sessionMismatchRequiresRejection = sessionMismatchWithBoundLock && !isLegacyLock
+      if (sessionMismatchRequiresRejection) throw new Error("review lock session ownership mismatch")
       const latest = database.prepare("SELECT COALESCE(MAX(ordinal), 0) AS ordinal FROM review_rounds WHERE review_id = ?").get(request.reviewId) as { ordinal: number }
       const ordinal = Number(latest.ordinal) + 1
       const [intentType, intentRef] = intentValues(request.intent)
@@ -254,6 +264,18 @@ export function complete(options: DatabaseOptions, request: CompleteReviewReques
       throw error
     }
   })
+}
+
+function validateRequiredLaneIntent(
+  lanes: string[],
+  expected: { intent_type: string | null; intent_ref: string | null } | undefined,
+  actual: CompleteReviewRequest["intent"],
+): void {
+  const requiresIntent = lanes.some((name) => laneByName(name)?.requiresIntent === true)
+  if (!requiresIntent) return
+  const [actualType, actualRef] = intentValues(actual)
+  const matchesExpected = expected?.intent_type === actualType && expected.intent_ref === actualRef
+  if (!matchesExpected) throw new Error("intent reference must match the reference established at review begin")
 }
 
 function validateLaneResults(requested: LaneResult[] | undefined, rows: Array<{ lane: string; status: "completed" | "failed" | null; failure_reason: string | null }>): LaneResult[] {

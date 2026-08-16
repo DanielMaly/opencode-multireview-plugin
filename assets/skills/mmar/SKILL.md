@@ -7,7 +7,7 @@ description: Run MMAR (multi-model adversarial review) as a durable, scope-isola
 
 Use this skill when the caller asks for an MMAR review. MMAR is a durable, scope-isolated review process; it is not a request to create or update a repository Markdown findings file.
 
-Delegate normally to `mmar_orchestrator` with exactly one versioned request envelope:
+Delegate normally to `mmar_orchestrator` with exactly one versioned request envelope. Reject malformed or multiple envelopes.
 
 ```text
 <mmar_request>
@@ -22,7 +22,7 @@ Delegate normally to `mmar_orchestrator` with exactly one versioned request enve
 </mmar_request>
 ```
 
-Supported lanes are `correctness`, `codestyle`, `testing`, and `intent`, derived from the canonical lane registry. Omit `lanes` to retain correctness, codestyle, and testing, plus intent when an intent reference is supplied. Explicit lanes are exact; empty, duplicate, and unknown lists are invalid. Selecting `intent` requires an intent reference, while an intent reference may be supplied with intent omitted. `instructions` is optional supplemental focus and cannot broaden specialist boundaries or override MMAR lifecycle rules.
+Supported lanes are `correctness` (`CORRECTNESS`), `codestyle` (`CODESTYLE`), `testing` (`TESTING`), and `intent` (`INTENT`), derived from the canonical lane registry. Omit `lanes` to retain correctness, codestyle, and testing, plus intent when an intent reference is supplied. Explicit lanes are exact; empty, duplicate, and unknown lists are invalid. Selecting `intent` requires an intent reference, while an intent reference may be supplied with intent omitted. `instructions` is optional supplemental focus and cannot broaden specialist boundaries or override MMAR lifecycle rules.
 
 For requests to discover prior MMAR runs or retrieve historical findings, any agent with a valid context and session may call `mmar_list_reviews` and `mmar_get_findings` directly. Do not start a new review for a retrieval request or require delegation to `mmar_orchestrator`. Omit `worktreePath` for the current session worktree; when the requested scope is another local worktree, pass its exact absolute Git worktree root to the read tool. This intentionally widens model-facing read access beyond the OpenCode session root, while granting no database-path selection, SQL, writes, lock ownership, fencing credentials, `mmar_begin`, or `mmar_complete` authority. Explicit non-Git paths are unsupported, and uncommitted reviews remain isolated to the exact selected worktree.
 

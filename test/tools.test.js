@@ -494,6 +494,7 @@ test("rejects malformed payloads and untrusted, empty, or out-of-worktree contex
 
 test("asserts exact orchestrator prompt contracts without claiming executable model orchestration", () => {
   const prompt = readFileSync(new URL("../assets/agents/mmar_orchestrator.md", import.meta.url), "utf8");
+  const skill = readFileSync(new URL("../assets/skills/mmar/SKILL.md", import.meta.url), "utf8");
   const retrieval = prompt.indexOf("## Historical retrieval");
   assert.ok(prompt.includes("## Required workflow for new review requests"));
   const begin = prompt.indexOf("1. Call `mmar_begin` first");
@@ -513,6 +514,11 @@ test("asserts exact orchestrator prompt contracts without claiming executable mo
   assert.match(prompt, /During an active lane, specialists may retrieve history only with the supplied current `reviewId` and `worktreePath`; they must not list or browse unrelated reviews/);
   assert.match(prompt, /After a successful begin, call `mmar_complete` exactly once/s);
   assert.match(prompt, /canonical specialist name.*short lane alias/s);
+  assert.match(prompt, /exactly one `<mmar_request>` envelope.*version: 1/);
+  assert.match(prompt, /Reject malformed or multiple envelopes/);
+  assert.match(skill, /exactly one versioned request envelope[\s\S]*Reject malformed or multiple envelopes/);
+  assert.match(skill, /<mmar_request>[\s\S]*"version": 1/);
+  assert.match(skill, /"version": 1/);
   assert.doesNotMatch(prompt, /REVIEW_FINDINGS\.md|git excludes/);
   const intentPrompt = readFileSync(new URL("../assets/agents/mmar_intent.md", import.meta.url), "utf8");
   assert.match(intentPrompt, /use `mmar_get_findings` only for that review ID and worktree path/);
