@@ -1,9 +1,9 @@
 {
   "models": {
-    "coordinator": "github-copilot/claude-opus-4.8",
+    "coordinator": "github-copilot/claude-opus-5",
     "codestyle": "github-copilot/claude-sonnet-5",
-    "correctness": "github-copilot/gpt-5.4",
-    "testing": "github-copilot/gemini-3.5-flash",
-    "intent": "github-copilot/claude-opus-4.8"
+    "correctness": "github-copilot/gpt-5.6-sol",
+    "testing": "github-copilot/gemini-3.7-flash",
+    "intent": "github-copilot/claude-opus-5"
   }
 }

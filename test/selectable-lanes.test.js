@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { mkdtempSync, rmSync } from "node:fs"
 import { randomUUID } from "node:crypto"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
@@ -9,13 +9,8 @@ import { laneRegistry } from "../dist/lanes.js"
 import { PersistentReviewLifecycle } from "../dist/storage/lifecycle.js"
 import { ReviewStore } from "../dist/storage/reviews.js"
 import { openDatabase } from "../dist/storage/database.js"
-import { REVIEWER_REGISTRY } from "../dist/defaults.js"
-
-function documentedLanePairs(document) {
-  const match = document.match(/Current supported lane\/category pairs are (.+?)\./)
-  assert.ok(match)
-  return [...match[1].matchAll(/`([^`]+)` \(`([^`]+)`\)/g)].map((pair) => ({ name: pair[1], category: pair[2] }))
-}
+import { DEFAULT_CONFIG, REVIEWER_REGISTRY } from "../dist/defaults.js"
+import { buildAgents } from "../dist/agents.js"
 
 function identity() {
   return { projectKey: "lane-project", rootPath: "/lane", worktreePath: "/lane", headCommit: "head", isGit: false, baseRef: "main", baseCommit: "base" }
@@ -273,14 +268,16 @@ test("completed round retries do not inspect or change a newer active round", ()
   } finally { rmSync(directory, { recursive: true, force: true }) }
 })
 
-test("registered lanes have installed specialists and documented lane metadata", () => {
-  const orchestrator = readFileSync(new URL("../assets/agents/mmar_orchestrator.md", import.meta.url), "utf8")
-  const skill = readFileSync(new URL("../assets/skills/mmar/SKILL.md", import.meta.url), "utf8")
-  const expectedPairs = laneRegistry.map(({ name, category }) => ({ name, category }))
-  assert.deepEqual(documentedLanePairs(skill), expectedPairs)
-  assert.deepEqual(documentedLanePairs(orchestrator), expectedPairs)
+test("registered lanes have installed specialists and executable metadata", () => {
+  const agents = buildAgents(DEFAULT_CONFIG)
   for (const lane of laneRegistry) {
-    assert.equal(REVIEWER_REGISTRY[lane.name]?.name, lane.specialistAgent)
+    const metadata = REVIEWER_REGISTRY[lane.name]
+    const agent = agents[lane.specialistAgent]
+    assert.equal(metadata?.name, lane.specialistAgent)
+    assert.equal(metadata?.mode, "subagent")
+    assert.equal(agent?.mode, "subagent")
+    assert.equal(typeof agent?.prompt, "string")
+    assert.ok(agent?.prompt.trim().length > 0)
   }
 })
 
