@@ -164,7 +164,7 @@ test("orchestrator task access is exactly the registered specialist allowlist", 
     mmar_orchestrator: { permission: { task: { "*": "allow", unrelated: "deny" }, edit: "allow" } },
   } });
   assert.deepEqual(cfg.agent.mmar_orchestrator.permission.task, { "*": "deny", ...Object.fromEntries(names.map((name) => [name, "allow"])) });
-  assert.equal(cfg.agent.mmar_orchestrator.permission.edit, "allow");
+  assert.equal(cfg.agent.mmar_orchestrator.permission.edit, "deny");
 });
 
 test("preserves higher subagent depth and raises lower or missing values to two", async () => {
