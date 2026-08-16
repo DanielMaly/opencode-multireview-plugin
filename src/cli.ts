@@ -4,27 +4,12 @@ import { createInterface } from "node:readline"
 import { mkdirSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { basename, dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
+import { Command, CommanderError, Option } from "commander"
 import { ReviewStore } from "./storage/reviews.js"
 import type { ReviewSummary } from "./review.js"
 import { resolveRepositoryIdentity } from "./repository.js"
 import { serializeReviewMarkdown } from "./markdown.js"
 import { installSkill, type InstallMode } from "./installer.js"
-
-function usage(): never {
-  throw new Error([
-    "Usage:",
-    "  opencode-multireview list [--all-projects] [--json]",
-    "  opencode-multireview export <review-id> [--round <round-id>] [--output <path>]",
-    "  opencode-multireview unlock <review-id> [--force]",
-    "  opencode-multireview skill install --global|--project",
-  ].join("\n"))
-}
-
-function optionValue(args: string[], index: number, option: string): string {
-  const value = args[index + 1]
-  if (!value || value.startsWith("--")) throw new Error(`${option} requires a value`)
-  return value
-}
 
 function store(): ReviewStore {
   return new ReviewStore()
@@ -44,14 +29,9 @@ function formatSummary(summary: ReviewSummary): string {
   ].join("\n")
 }
 
-function listCommand(args: string[]): void {
-  let allProjects = false
-  let json = false
-  for (const arg of args) {
-    if (arg === "--all-projects") allProjects = true
-    else if (arg === "--json") json = true
-    else usage()
-  }
+function listCommand(options: { allProjects?: boolean; json?: boolean }): void {
+  const allProjects = options.allProjects ?? false
+  const json = options.json ?? false
   const projectKey = allProjects ? undefined : resolveRepositoryIdentity(process.cwd()).projectKey
   const reviews = store().list(projectKey)
   if (json) {
@@ -85,21 +65,8 @@ function writeAtomically(path: string, content: string): void {
   }
 }
 
-function exportCommand(args: string[]): void {
-  const reviewId = args[0]
-  if (!reviewId || reviewId.startsWith("--")) usage()
-  let roundId: string | undefined
-  let output: string | undefined
-  for (let index = 1; index < args.length; index += 1) {
-    const arg = args[index]
-    if (arg === "--round") {
-      roundId = optionValue(args, index, arg)
-      index += 1
-    } else if (arg === "--output") {
-      output = optionValue(args, index, arg)
-      index += 1
-    } else usage()
-  }
+function exportCommand(reviewId: string, options: { round?: string; output?: string }): void {
+  const { round: roundId, output } = options
   const reviewStore = store()
   const review = findReview(reviewStore, reviewId)
   const round = reviewStore.getRound(reviewId, roundId)
@@ -129,14 +96,8 @@ async function confirmUnlock(reviewId: string, lock: { acquiredAt: string; fenci
   }
 }
 
-async function unlockCommand(args: string[]): Promise<void> {
-  const reviewId = args[0]
-  if (!reviewId || reviewId.startsWith("--")) usage()
-  let force = false
-  for (const arg of args.slice(1)) {
-    if (arg === "--force") force = true
-    else usage()
-  }
+async function unlockCommand(reviewId: string, options: { force?: boolean }): Promise<void> {
+  const force = options.force ?? false
   const reviewStore = store()
   findReview(reviewStore, reviewId)
   const lock = reviewStore.inspectLock(reviewId)
@@ -153,28 +114,65 @@ async function unlockCommand(args: string[]): Promise<void> {
   process.stdout.write(deleted ? `Unlocked review ${reviewId}.\n` : `Lock for review ${reviewId} was replaced; no lock was removed.\n`)
 }
 
-function skillInstallCommand(args: string[]): void {
-  let mode: InstallMode | undefined
-  for (const arg of args) {
-    if (arg === "--global") {
-      if (mode) throw new Error("--global and --project are mutually exclusive")
-      mode = "global"
-    } else if (arg === "--project") {
-      if (mode) throw new Error("--global and --project are mutually exclusive")
-      mode = "project"
-    } else usage()
-  }
+function skillInstallCommand(options: { global?: boolean; project?: boolean }): void {
+  const mode: InstallMode | undefined = options.global ? "global" : options.project ? "project" : undefined
   if (!mode) throw new Error("exactly one of --global or --project is required")
   process.stdout.write(`${installSkill(mode).message}\n`)
 }
 
+function commandLine(): Command {
+  const program = new Command()
+    .name("opencode-multireview")
+    .description("Manage OpenCode multireview history and skills")
+    .exitOverride()
+    .configureOutput({ writeErr: () => undefined })
+
+  program
+    .command("list")
+    .description("List reviews for the current project")
+    .option("--all-projects", "list reviews from all projects")
+    .option("--json", "output reviews as JSON")
+    .action(listCommand)
+
+  program
+    .command("export <review-id>")
+    .description("Export a completed review as Markdown")
+    .option("--round <round-id>", "export a specific completed round")
+    .option("--output <path>", "write the Markdown to a file")
+    .action(exportCommand)
+
+  program
+    .command("unlock <review-id>")
+    .description("Release a review lock")
+    .option("--force", "release the lock without confirmation")
+    .action(unlockCommand)
+
+  const skill = program
+    .command("skill")
+    .description("Manage installed multireview skills")
+    .action(() => {
+      throw new Error(skill.helpInformation())
+    })
+  skill
+    .command("install")
+    .description("Install the multireview skill globally or in the project")
+    .addOption(new Option("--global", "install in the global skills directory").conflicts("project"))
+    .addOption(new Option("--project", "install in the project skills directory").conflicts("global"))
+    .action(skillInstallCommand)
+
+  program.action(() => {
+    throw new Error(program.helpInformation())
+  })
+  return program
+}
+
 export async function main(args = process.argv.slice(2)): Promise<void> {
-  const [command, ...commandArgs] = args
-  if (command === "list") listCommand(commandArgs)
-  else if (command === "export") exportCommand(commandArgs)
-  else if (command === "unlock") await unlockCommand(commandArgs)
-  else if (command === "skill" && commandArgs[0] === "install") skillInstallCommand(commandArgs.slice(1))
-  else usage()
+  try {
+    await commandLine().parseAsync(args, { from: "user" })
+  } catch (error) {
+    if (error instanceof CommanderError && error.code === "commander.helpDisplayed") return
+    throw error
+  }
 }
 
 if (process.argv[1] && realpathSync.native(fileURLToPath(import.meta.url)) === realpathSync.native(resolve(process.argv[1]))) {

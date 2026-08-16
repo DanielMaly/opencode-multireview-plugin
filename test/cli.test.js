@@ -36,6 +36,20 @@ function run(args, env, options = {}) {
   return spawnSync(process.execPath, [cli.pathname, ...args], { env, encoding: "utf8", ...options })
 }
 
+test("CLI uses Commander help and rejects invalid invocations", () => {
+  const help = run(["--help"], process.env)
+  assert.equal(help.status, 0)
+  assert.match(help.stdout, /Manage OpenCode multireview history and skills/)
+  assert.match(help.stdout, /export \[options\] <review-id>/)
+  assert.match(help.stdout, /skill.*Manage installed multireview skills/)
+
+  for (const args of [["export"], ["list", "--unknown"], ["skill", "install"], ["skill", "install", "--global", "--project"], ["unknown"]]) {
+    const result = run(args, process.env)
+    assert.notEqual(result.status, 0, args.join(" "))
+    assert.match(result.stderr, /^Error: /, args.join(" "))
+  }
+})
+
 function interactiveUnlock(reviewId, env) {
   const python = [
     "import os, pty, sys",
