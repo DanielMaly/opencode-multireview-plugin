@@ -166,6 +166,7 @@ export function complete(options: DatabaseOptions, request: CompleteReviewReques
         const pendingRoundMatches = activeLock.pending_round_id === request.roundId
         const isLegacyPending = !hasPendingRound && activeLock.lane_count === 0
         const pendingRoundMismatch = hasPendingRound && !pendingRoundMatches
+        // A lane-aware lock without pending_round_id violates migration 003; legacy pre-003 locks have no lane rows.
         const unsupportedMissingPendingRound = !hasPendingRound && !isLegacyPending
         if (pendingRoundMismatch || unsupportedMissingPendingRound) throw new Error("review round does not match the active lock pending round")
       }
@@ -190,6 +191,7 @@ export function complete(options: DatabaseOptions, request: CompleteReviewReques
       validateRequiredLaneIntent(laneRows.map((row) => row.lane), expectedIntent, request.intent)
       const payloadHash = hashRoundPayload(laneRows.length === 0 ? payload : { ...payload, laneResults })
       if (existingRound) {
+        // Fencing is deliberately not checked here: the payload hash and completed session bind this round, while an active lock may belong to a newer round.
         if (existingRound.payload_hash !== payloadHash) throw new Error("round retry payload differs from the original")
         const requestSessionID = sessionValue(request.sessionID)
         const hasRequestSession = requestSessionID !== null
@@ -294,5 +296,23 @@ function validateLaneResults(requested: LaneResult[] | undefined, rows: Array<{ 
     if (result.status !== "completed" && result.status !== "failed") throw new Error("lane result status is invalid")
   }
   if (resultNames.size !== rowNames.size) throw new Error("laneResults must account for every requested lane exactly once")
-  return rows.map((row) => requested.find((result) => result.lane === row.lane) as LaneResult)
+  return rows.map((row) => canonicalLaneResult(requested.find((result) => result.lane === row.lane) as LaneResult))
+}
+
+function canonicalLaneResult(result: LaneResult): LaneResult {
+  const hasFailureReason = Object.hasOwn(result, "failureReason")
+  if (result.status === "completed") {
+    if (hasFailureReason) throw new Error("completed lane results must not include failureReason")
+    return { lane: result.lane, status: result.status }
+  }
+  if (!hasFailureReason) return { lane: result.lane, status: result.status }
+  const failureReason = normalizeFailureReason(result.failureReason)
+  return { lane: result.lane, status: result.status, failureReason }
+}
+
+function normalizeFailureReason(value: unknown): string {
+  if (typeof value !== "string") throw new Error("failureReason must be a non-empty string")
+  const normalized = value.trim().replace(/\s+/g, " ")
+  if (!normalized) throw new Error("failureReason must be a non-empty string")
+  return normalized
 }

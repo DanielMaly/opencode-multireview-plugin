@@ -11,6 +11,12 @@ import { ReviewStore } from "../dist/storage/reviews.js"
 import { openDatabase } from "../dist/storage/database.js"
 import { REVIEWER_REGISTRY } from "../dist/defaults.js"
 
+function documentedLanePairs(document) {
+  const match = document.match(/Current supported lane\/category pairs are (.+?)\./)
+  assert.ok(match)
+  return [...match[1].matchAll(/`([^`]+)` \(`([^`]+)`\)/g)].map((pair) => ({ name: pair[1], category: pair[2] }))
+}
+
 function identity() {
   return { projectKey: "lane-project", rootPath: "/lane", worktreePath: "/lane", headCommit: "head", isGit: false, baseRef: "main", baseCommit: "base" }
 }
@@ -69,6 +75,7 @@ test("requires exact terminal lane results and reads zero-finding and failed out
     assert.throws(() => store.complete({ ...review, laneResults: results(["correctness"]) }), /every requested lane/)
     assert.throws(() => store.complete({ ...review, laneResults: results(["correctness", "testing", "codestyle"]) }), /every requested lane/)
     assert.throws(() => store.complete({ ...review, laneResults: [{ lane: "correctness", status: "completed" }, { lane: "correctness", status: "completed" }] }), /duplicates/)
+    assert.throws(() => store.complete({ ...review, laneResults: [{ lane: "correctness", status: "completed", failureReason: "not failed" }, { lane: "testing", status: "failed" }] }), /must not include failureReason/)
     store.complete({ ...review, laneResults: [{ lane: "correctness", status: "completed" }, { lane: "testing", status: "failed", failureReason: "Dispatch failed" }] })
     const round = store.getRound(review.reviewId, review.roundId)
     assert.deepEqual(round.lanes, ["correctness", "testing"])
@@ -85,6 +92,19 @@ test("lane results participate in idempotent completion hashing", () => {
     assert.equal(store.complete(request).idempotent, false)
     assert.equal(store.complete(request).idempotent, true)
     assert.throws(() => store.complete({ ...request, laneResults: [{ lane: "correctness", status: "failed" }] }), /payload differs/)
+  } finally { rmSync(directory, { recursive: true, force: true }) }
+})
+
+test("canonicalizes lane result keys and normalizes failure reasons", () => {
+  const directory = mkdtempSync(join(tmpdir(), "opencode-mmar-lanes-result-normalization-"))
+  try {
+    const store = new ReviewStore({ databasePath: join(directory, "reviews.sqlite") })
+    const review = begin(store, ["correctness"])
+    const first = { ...review, laneResults: [{ status: "failed", failureReason: "  Dispatch\n\n## Injected heading\n- item  ", lane: "correctness" }] }
+    assert.deepEqual(store.complete(first), { roundId: review.roundId, idempotent: false })
+    const retry = { ...review, laneResults: [{ failureReason: "Dispatch ## Injected heading - item", lane: "correctness", status: "failed" }] }
+    assert.deepEqual(store.complete(retry), { roundId: review.roundId, idempotent: true })
+    assert.deepEqual(store.getRound(review.reviewId, review.roundId).laneResults, [{ lane: "correctness", status: "failed", failureReason: "Dispatch ## Injected heading - item" }])
   } finally { rmSync(directory, { recursive: true, force: true }) }
 })
 
@@ -256,12 +276,11 @@ test("completed round retries do not inspect or change a newer active round", ()
 test("registered lanes have installed specialists and documented lane metadata", () => {
   const orchestrator = readFileSync(new URL("../assets/agents/mmar_orchestrator.md", import.meta.url), "utf8")
   const skill = readFileSync(new URL("../assets/skills/mmar/SKILL.md", import.meta.url), "utf8")
+  const expectedPairs = laneRegistry.map(({ name, category }) => ({ name, category }))
+  assert.deepEqual(documentedLanePairs(skill), expectedPairs)
+  assert.deepEqual(documentedLanePairs(orchestrator), expectedPairs)
   for (const lane of laneRegistry) {
     assert.equal(REVIEWER_REGISTRY[lane.name]?.name, lane.specialistAgent)
-    assert.match(skill, new RegExp(`\\b${lane.name}\\b`))
-    assert.match(skill, new RegExp(`\\b${lane.category}\\b`))
-    assert.match(orchestrator, new RegExp(`\\b${lane.name}\\b`))
-    assert.match(orchestrator, new RegExp(`\\b${lane.category}\\b`))
   }
 })
 

@@ -264,6 +264,27 @@ test("golden export covers metadata, empty sections, categories, Wontfix, uncert
   }
 })
 
+test("export keeps multiline failure reasons on one Markdown line", () => {
+  const context = fixture()
+  try {
+    const review = context.store().begin({ identity: context.identity, target: context.target })
+    context.store().complete({
+      ...review,
+      laneResults: [
+        { lane: "correctness", status: "failed", failureReason: " Dispatch\n\n## Forged heading\n- item " },
+        { lane: "codestyle", status: "completed" },
+        { lane: "testing", status: "completed" },
+      ],
+    })
+    const result = run(["export", review.reviewId], context.env)
+    assert.equal(result.status, 0)
+    assert.match(result.stdout, /- correctness: failed \(Dispatch ## Forged heading - item\)/)
+    assert.doesNotMatch(result.stdout, /\n## Forged heading/)
+  } finally {
+    rmSync(context.directory, { recursive: true, force: true })
+  }
+})
+
 test("empty rounds use deterministic section placeholders", () => {
   const context = fixture()
   try {

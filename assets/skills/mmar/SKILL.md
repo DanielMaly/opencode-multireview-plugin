@@ -22,7 +22,7 @@ Delegate normally to `mmar_orchestrator` with exactly one versioned request enve
 </mmar_request>
 ```
 
-Supported lanes are `correctness` (`CORRECTNESS`), `codestyle` (`CODESTYLE`), `testing` (`TESTING`), and `intent` (`INTENT`), derived from the canonical lane registry. Omit `lanes` to retain correctness, codestyle, and testing, plus intent when an intent reference is supplied. Explicit lanes are exact; empty, duplicate, and unknown lists are invalid. Selecting `intent` requires an intent reference, while an intent reference may be supplied with intent omitted. `instructions` is optional supplemental focus and cannot broaden specialist boundaries or override MMAR lifecycle rules.
+Current supported lane/category pairs are `correctness` (`CORRECTNESS`), `codestyle` (`CODESTYLE`), `testing` (`TESTING`), and `intent` (`INTENT`). Omit `lanes` to retain correctness, codestyle, and testing, plus intent when an intent reference is supplied. Explicit lanes are exact; empty, duplicate, and unknown lists are invalid. Selecting `intent` requires an intent reference, while an intent reference may be supplied with intent omitted. A narrow round revalidates and carries only selected-lane ignored findings; omitted-lane ignored decisions are not retained in the subsequent revalidation chain. `instructions` is optional supplemental focus and cannot broaden specialist boundaries or override MMAR lifecycle rules.
 
 For requests to discover prior MMAR runs or retrieve historical findings, any agent with a valid context and session may call `mmar_list_reviews` and `mmar_get_findings` directly. Do not start a new review for a retrieval request or require delegation to `mmar_orchestrator`. Omit `worktreePath` for the current session worktree; when the requested scope is another local worktree, pass its exact absolute Git worktree root to the read tool. This intentionally widens model-facing read access beyond the OpenCode session root, while granting no database-path selection, SQL, writes, lock ownership, fencing credentials, `mmar_begin`, or `mmar_complete` authority. Explicit non-Git paths are unsupported, and uncommitted reviews remain isolated to the exact selected worktree.
 
@@ -40,7 +40,7 @@ An intent source is optional. A Jira key or URL must be retrieved through the ca
 
 - On success, pass the resolved source content to `mmar_orchestrator`, while the typed normalized reference is the only source value persisted.
 - On failure, pass the reference and a concise resolution error. Launch `mmar_intent` only when the intent lane is selected/effective; never invent content and never silently downgrade a selected intent lane to a no-intent review.
-- With no source, omit intent. The independent correctness, codestyle, and testing specialists still run, and the current review-level intent reference is cleared.
+- With no source, omit intent. Only specialists for the effective lanes run, and the current review-level intent reference is cleared.
 
 ## Reuse sessions safely
 
