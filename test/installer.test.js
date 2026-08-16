@@ -71,7 +71,7 @@ test("requires exactly one install mode and rejects both modes", () => {
   assert.match(missing.stderr, /exactly one of --global or --project is required/)
   const both = spawnSync(process.execPath, [cli.pathname, "skill", "install", "--global", "--project"], { encoding: "utf8" })
   assert.notEqual(both.status, 0)
-  assert.match(both.stderr, /mutually exclusive/)
+  assert.match(both.stderr, /cannot be used with option '--project'/)
 })
 
 test("CLI subprocess installs global and project skills", () => {
@@ -101,6 +101,7 @@ test("CLI entry point runs from a path containing URL-encoded characters", () =>
   cpSync(new URL("../dist", import.meta.url), dist, { recursive: true })
   cpSync(new URL("../assets", import.meta.url), join(spaced, "assets"), { recursive: true })
   cpSync(new URL("../package.json", import.meta.url), join(spaced, "package.json"))
+  cpSync(new URL("../node_modules/commander", import.meta.url), join(spaced, "node_modules", "commander"), { recursive: true })
   try {
     const result = spawnSync(process.execPath, [join(dist, "cli.js"), "skill", "install", "--project"], { cwd: spaced, encoding: "utf8" })
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`)
