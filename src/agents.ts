@@ -17,7 +17,8 @@ type AgentDefinition = {
 const COORDINATOR_PERMISSION = {
   read: "allow",
   task: "allow",
-  bash: "deny",
+  bash: "allow",
+  edit: "deny"
 } as const
 
 const COORDINATOR_TOOLS = {
@@ -38,7 +39,7 @@ const REVIEWER_PERMISSION = {
 const REVIEWER_TOOLS = {
   mmar_begin: false,
   mmar_complete: false,
-  mmar_list_reviews: true,
+  mmar_list_reviews: false,
   mmar_get_findings: true,
 } as const
 

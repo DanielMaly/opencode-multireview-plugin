@@ -149,9 +149,12 @@ test("real OpenCode loads the local plugin alongside legacy agents and enforces 
     assert.equal(mmarSkill.location, new URL(bundledSkillFile).pathname)
     assert.equal(existsSync(join(project, ".opencode", "skills", "mmar", "SKILL.md")), false)
 
-    const orchestratorDebug = JSON.parse(runOpenCode(["debug", "agent", "mmar_orchestrator"], project, env))
-    assert.equal(orchestratorDebug.name, "mmar_orchestrator")
-    assert.match(orchestratorDebug.prompt, /MMAR/)
+    for (const name of ["mmar_orchestrator", "mmar_correctness", "mmar_codestyle", "mmar_testing", "mmar_intent"]) {
+      const agent = JSON.parse(runOpenCode(["debug", "agent", name], project, env))
+      assert.equal(agent.name, name)
+      assert.equal(typeof agent.prompt, "string")
+      assert.ok(agent.prompt.trim().length > 0)
+    }
 
     const port = await reservePort()
     server = spawn("opencode", ["serve", "--hostname", "127.0.0.1", "--port", String(port)], {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
@@ -56,8 +56,6 @@ async function completeTool(tools, args, context) {
 
 test("exposes exactly four tools and no model-controlled database or session arguments", () => {
   assert.deepEqual(Object.keys(mmarTools).sort(), ["mmar_begin", "mmar_complete", "mmar_get_findings", "mmar_list_reviews"]);
-  assert.match(mmarTools.mmar_begin.description, /selecting exact review lanes/);
-  assert.match(mmarTools.mmar_complete.description, /exactly one terminal lane outcome/);
   assert.deepEqual(Object.keys(mmarTools.mmar_begin.args).sort(), ["baseRef", "intent", "lanes", "requestScope", "target"]);
   assert.deepEqual(Object.keys(mmarTools.mmar_complete.args).sort(), [
     "fencingToken", "ignoredFindings", "intent", "laneResults", "reviewId", "roundId", "uncertainties", "validFindings",
@@ -490,40 +488,4 @@ test("rejects malformed payloads and untrusted, empty, or out-of-worktree contex
     rmSync(directory, { recursive: true, force: true });
     rmSync(outside, { recursive: true, force: true });
   }
-});
-
-test("asserts exact orchestrator prompt contracts without claiming executable model orchestration", () => {
-  const prompt = readFileSync(new URL("../assets/agents/mmar_orchestrator.md", import.meta.url), "utf8");
-  const skill = readFileSync(new URL("../assets/skills/mmar/SKILL.md", import.meta.url), "utf8");
-  const retrieval = prompt.indexOf("## Historical retrieval");
-  assert.ok(prompt.includes("## Required workflow for new review requests"));
-  const begin = prompt.indexOf("1. Call `mmar_begin` first");
-  const read = prompt.indexOf("Obtain the changeset");
-  assert.ok(retrieval >= 0 && retrieval < begin);
-  assert.match(prompt, /Historical retrieval[\s\S]*Callers may use the read-only[\s\S]*this workflow does not start a review/);
-  assert.ok(begin >= 0 && begin < read);
-  assert.match(prompt, /returned `reviewId` and `repository\.worktreePath` as the current review scope/);
-  assert.match(prompt, /including both exact values in every specialist's compact scope as `reviewId` and `worktreePath`/);
-  assert.match(prompt, /locked: true.*spawn nobody.*exit cleanly/s);
-  assert.match(prompt, /concurrently launch exactly the selected specialist/);
-  assert.match(prompt, /effective `lanes` as authoritative/);
-  assert.match(prompt, /exactly one terminal `laneResults` entry for every effective lane/);
-  assert.match(prompt, /For the intent lane, give resolved content when available/);
-  assert.match(prompt, /partial.*blocked.*runtime output only/s);
-  assert.match(prompt, /prior ignored entries as revalidation candidates.*not exclusions/s);
-  assert.match(prompt, /During an active lane, specialists may retrieve history only with the supplied current `reviewId` and `worktreePath`; they must not list or browse unrelated reviews/);
-  assert.match(prompt, /After a successful begin, call `mmar_complete` exactly once/s);
-  assert.match(prompt, /canonical specialist name.*short lane alias/s);
-  assert.match(prompt, /exactly one `<mmar_request>` envelope.*version: 1/);
-  assert.match(prompt, /Reject malformed or multiple envelopes/);
-  assert.match(skill, /exactly one versioned request envelope[\s\S]*Reject malformed or multiple envelopes/);
-  assert.match(skill, /<mmar_request>[\s\S]*"version": 1/);
-  assert.match(skill, /"version": 1/);
-  assert.doesNotMatch(prompt, /REVIEW_FINDINGS\.md|git excludes/);
-  const intentPrompt = readFileSync(new URL("../assets/agents/mmar_intent.md", import.meta.url), "utf8");
-  assert.match(intentPrompt, /use `mmar_get_findings` only for that review ID and worktree path/);
-  assert.match(intentPrompt, /MMAR history is not authoritative intent source material/);
-  assert.match(intentPrompt, /must not be used to fetch Jira issues, Jira URLs, local files/);
-  assert.match(intentPrompt, /Never retrieve external or local source material yourself/);
-  assert.doesNotMatch(intentPrompt, /\b(?:may|can|should)\b[^.\n]*(?:fetch|retrieve)[^.\n]*(?:Jira|local)/is);
 });

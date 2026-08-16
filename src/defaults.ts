@@ -22,11 +22,11 @@ export type MultireviewPluginOptions = Partial<{
 
 export const DEFAULT_CONFIG: MultireviewPluginConfig = {
   models: {
-    coordinator: { model: "github-copilot/claude-opus-4.8" },
+    coordinator: { model: "github-copilot/claude-opus-5" },
     codestyle: { model: "github-copilot/claude-sonnet-5" },
-    correctness: { model: "github-copilot/gpt-5.4" },
-    testing: { model: "github-copilot/gemini-3.5-flash" },
-    intent: { model: "github-copilot/claude-opus-4.8" },
+    correctness: { model: "github-copilot/gpt-5.6-sol" },
+    testing: { model: "github-copilot/gemini-3.7-flash" },
+    intent: { model: "github-copilot/claude-opus-5" },
   },
 }
 
