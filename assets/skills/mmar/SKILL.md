@@ -1,11 +1,11 @@
 ---
 name: mmar
-description: Run MMAR (multi-model adversarial review) as a durable, scope-isolated code review. Use when the caller requests MMAR, multireview, or a multi-model adversarial review of a pull request, branch, commit, worktree, or custom changeset.
+description: Run MMAR (multi-model adversarial review) as a durable, scope-isolated code review. Use when the user requests MMAR, multireview, or a multi-model adversarial review of a pull request, branch, commit, worktree, or custom changeset.
 ---
 
 # MMAR caller workflow
 
-Use this skill to call the MMAR plugin. The caller prepares one review request, delegates it to `mmar_orchestrator`, and presents the result. The orchestrator owns review lifecycle, specialist dispatch, adjudication, and persistence.
+Use this skill to call the MMAR plugin. Prepare one review request, delegate it to `mmar_orchestrator`, and present the result to the user. The orchestrator owns review lifecycle, specialist dispatch, adjudication, and persistence.
 
 Do not dispatch hidden lane specialists directly. Do not create or update a repository Markdown findings file.
 
@@ -13,8 +13,8 @@ Do not dispatch hidden lane specialists directly. Do not create or update a repo
 
 1. Normalize the requested changeset as one supported target: pull request, branch, commit, uncommitted worktree, or explicit custom changeset.
 2. Require a Git-resolvable base ref. Stop with an actionable error if it cannot be resolved.
-3. Summarize what the caller wants reviewed as a compact `requestScope`. Do not embed the full diff as metadata.
-4. Choose lanes only when the caller requests a narrower review.
+3. Summarize the requested review as a compact `requestScope`. Do not embed the full diff as metadata.
+4. Choose lanes only when the user requests a narrower review.
 5. Resolve optional intent before delegation.
 
 Supported lanes are:
@@ -28,17 +28,17 @@ Omit `lanes` for the default review: correctness, codestyle, and testing, plus i
 
 ## Resolve optional intent
 
-Intent may come from Jira or an exact caller-supplied local file path.
+Intent may come from Jira or an exact user-supplied local file path.
 
-- Retrieve Jira through the caller's authenticated Jira integration.
-- Read a local source from the exact supplied path.
+- If the user supplies Jira intent, resolve it before delegation using the authenticated Jira integration available in the current environment.
+- If the user supplies a local source, read it from the exact supplied path.
 - On success, pass the source content to the orchestrator and include its typed reference in the request.
 - On failure, pass the typed reference and a concise resolution error. Do not invent source content or silently remove a selected intent lane.
 - With no intent source, omit intent entirely.
 
 ## Delegate once
 
-Send exactly one versioned request envelope to `mmar_orchestrator`. Reject malformed requests and multiple envelopes.
+Construct one versioned request envelope and send it to `mmar_orchestrator` in a single delegation.
 
 ```text
 <mmar_request>
@@ -65,7 +65,7 @@ Present the orchestrator's review ID, round ID, runtime status, findings, ignore
 - `partial`: uncertainty remains, but at least one finding is independently actionable.
 - `blocked`: uncertainty remains and no finding is independently actionable.
 
-Ask the caller any returned clarification questions. For a clarification round, reuse the same scope and orchestrator session.
+Ask the user any returned clarification questions. For a clarification round, reuse the same scope and orchestrator session.
 
 If the orchestrator reports an active lock, show the review ID and acquisition time. Do not start another review or bypass the lock.
 
