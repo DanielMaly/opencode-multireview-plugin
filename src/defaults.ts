@@ -35,6 +35,7 @@ export type ReviewerMetadata = {
   description: string
   mode: "primary" | "subagent" | "all"
   promptFile: string
+  hidden?: boolean
 }
 
 export const REVIEWER_REGISTRY = {
@@ -43,6 +44,7 @@ export const REVIEWER_REGISTRY = {
     description:
       "Principal Engineer Coordinator for MMAR, multireview, and multi-model adversarial reviews of pull requests, branches, commits, uncommitted worktrees, and custom changesets.",
     mode: "all",
+    hidden: false,
     promptFile: "mmar_orchestrator.md",
   },
   codestyle: {
@@ -50,6 +52,7 @@ export const REVIEWER_REGISTRY = {
     description:
       "Internal MMAR specialist lane focused exclusively on code style and readability review. Use for style-only review, linting feedback, naming feedback, or convention and clean-code questions; return results to the orchestrator and never initiate persistence.",
     mode: "subagent",
+    hidden: true,
     promptFile: "mmar_codestyle.md",
   },
   correctness: {
@@ -57,6 +60,7 @@ export const REVIEWER_REGISTRY = {
     description:
       "Internal MMAR specialist lane focused exclusively on correctness and security code review — covering logic soundness, edge cases, error handling, concurrency, performance, and OWASP Top 10 vulnerabilities. Return results to the orchestrator and never initiate persistence.",
     mode: "subagent",
+    hidden: true,
     promptFile: "mmar_correctness.md",
   },
   testing: {
@@ -64,6 +68,7 @@ export const REVIEWER_REGISTRY = {
     description:
       "Internal MMAR specialist lane focused exclusively on test coverage review. Identify gaps in tests for changed code paths, return results to the orchestrator, and never initiate persistence.",
     mode: "subagent",
+    hidden: true,
     promptFile: "mmar_testing.md",
   },
   intent: {
@@ -71,6 +76,7 @@ export const REVIEWER_REGISTRY = {
     description:
       "Internal MMAR specialist lane focused exclusively on conformance to caller-supplied plans, specifications, tickets, and decisions. Return results to the orchestrator and never initiate persistence.",
     mode: "subagent",
+    hidden: true,
     promptFile: "mmar_intent.md",
   },
 } as const satisfies Record<ReviewerKey, ReviewerMetadata>

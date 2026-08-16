@@ -9,8 +9,9 @@ type AgentDefinition = {
   model: string
   variant?: string
   prompt: string
-  permission: Record<string, "allow" | "deny">
+  permission: Record<string, unknown>
   tools: Record<string, boolean>
+  hidden?: boolean
 }
 
 const COORDINATOR_PERMISSION = {
@@ -54,6 +55,7 @@ export function buildAgents(config: MultireviewPluginConfig): Record<string, Age
         {
           description: metadata.description,
           mode: metadata.mode,
+          ...(metadata.hidden === true ? { hidden: true } : {}),
           model: config.models[key].model,
           ...(config.models[key].variant === undefined ? {} : { variant: config.models[key].variant }),
           prompt,

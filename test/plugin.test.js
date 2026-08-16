@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { MultireviewPlugin, createMultireviewPlugin } from "../dist/index.js";
 import { PersistentReviewLifecycle } from "../dist/storage/lifecycle.js";
 import { ReviewStore } from "../dist/storage/reviews.js";
+import { laneRegistry } from "../dist/lanes.js";
 
 function identity(directory) {
   return {
@@ -17,6 +18,16 @@ function identity(directory) {
     baseRef: "base",
     baseCommit: "base-commit",
   };
+}
+
+function specialistNames() {
+  return laneRegistry.map((lane) => lane.specialistAgent)
+}
+
+async function configured(initial = {}) {
+  const plugin = await MultireviewPlugin({}, { configPath: "/nonexistent/multireview-plugin.json" });
+  await plugin.config(initial);
+  return initial;
 }
 
 test("initializes and injects all agents without a companion plugin", async () => {
@@ -88,7 +99,7 @@ test("keeps write tools exclusive while enabling read tools for every bundled sp
 
   assert.deepEqual(cfg.agent.mmar_orchestrator.permission, {
     read: "allow",
-    task: "allow",
+    task: { "*": "deny", ...Object.fromEntries(specialistNames().map((name) => [name, "allow"])) },
     bash: "deny",
   });
   assert.deepEqual(cfg.agent.mmar_orchestrator.tools, { mmar_begin: true, mmar_complete: true, mmar_list_reviews: true, mmar_get_findings: true });
@@ -98,6 +109,67 @@ test("keeps write tools exclusive while enabling read tools for every bundled sp
     assert.equal(cfg.agent[name].tools.mmar_list_reviews, true);
     assert.equal(cfg.agent[name].tools.mmar_get_findings, true);
   }
+});
+
+test("hides registry specialists and preserves the visible orchestrator", async () => {
+  const cfg = await configured({ agent: {} });
+  assert.equal(cfg.agent.mmar_orchestrator.hidden, false);
+  assert.equal(cfg.agent.mmar_orchestrator.mode, "all");
+  for (const name of specialistNames()) {
+    assert.equal(cfg.agent[name].hidden, true);
+    assert.equal(cfg.agent[name].mode, "subagent");
+  }
+});
+
+test("merges top-level task permissions for missing, string, and object rules", async () => {
+  const names = specialistNames();
+  const missing = await configured({});
+  assert.deepEqual(missing.permission.task, Object.fromEntries(names.map((name) => [name, "deny"])));
+
+  const wholeString = await configured({ permission: "allow" });
+  assert.deepEqual(wholeString.permission, {
+    "*": "allow",
+    task: { "*": "allow", ...Object.fromEntries(names.map((name) => [name, "deny"])) },
+  });
+
+  const string = await configured({ permission: { task: "allow", read: "deny" } });
+  assert.deepEqual(string.permission.task, { "*": "allow", ...Object.fromEntries(names.map((name) => [name, "deny"])) });
+  assert.equal(string.permission.read, "deny");
+
+  const object = await configured({ permission: { task: { "*": "allow", custom_agent: "deny" }, edit: "allow" } });
+  assert.deepEqual(object.permission.task, { "*": "allow", custom_agent: "deny", ...Object.fromEntries(names.map((name) => [name, "deny"])) });
+  assert.equal(object.permission.edit, "allow");
+});
+
+test("protects explicit non-orchestrator task overrides without adding absent overrides", async () => {
+  const names = specialistNames();
+  const cfg = await configured({ agent: {
+    whole_string: { permission: "allow" },
+    caller: { permission: { task: "allow", bash: "ask" } },
+    no_override: { permission: { bash: "allow" } },
+  } });
+  assert.deepEqual(cfg.agent.whole_string.permission, {
+    "*": "allow",
+    task: { "*": "allow", ...Object.fromEntries(names.map((name) => [name, "deny"])) },
+  });
+  assert.deepEqual(cfg.agent.caller.permission.task, { "*": "allow", ...Object.fromEntries(names.map((name) => [name, "deny"])) });
+  assert.equal(cfg.agent.caller.permission.bash, "ask");
+  assert.equal(Object.hasOwn(cfg.agent.no_override.permission, "task"), false);
+});
+
+test("orchestrator task access is exactly the registered specialist allowlist", async () => {
+  const names = specialistNames();
+  const cfg = await configured({ agent: {
+    mmar_orchestrator: { permission: { task: { "*": "allow", unrelated: "deny" }, edit: "allow" } },
+  } });
+  assert.deepEqual(cfg.agent.mmar_orchestrator.permission.task, { "*": "deny", ...Object.fromEntries(names.map((name) => [name, "allow"])) });
+  assert.equal(cfg.agent.mmar_orchestrator.permission.edit, "allow");
+});
+
+test("preserves higher subagent depth and raises lower or missing values to two", async () => {
+  assert.equal((await configured({})).subagent_depth, 2);
+  assert.equal((await configured({ subagent_depth: 1 })).subagent_depth, 2);
+  assert.equal((await configured({ subagent_depth: 5 })).subagent_depth, 5);
 });
 
 test("describes the orchestrator scope and keeps specialist lanes internal", async () => {
