@@ -5,7 +5,7 @@ description: Run MMAR (multi-model adversarial review) as a durable, scope-isola
 
 # MMAR caller workflow
 
-Use this skill when the caller asks for an MMAR review. MMAR is a durable, scope-isolated review process; it is not a request to create or update a repository Markdown findings file.
+Use this skill when the caller asks for an MMAR review. MMAR is a durable, scope-isolated review process; it is not a request to create or update a repository Markdown findings file. Lane agents are internal and hidden; callers dispatch only `mmar_orchestrator`.
 
 Delegate normally to `mmar_orchestrator` with exactly one versioned request envelope. Reject malformed or multiple envelopes.
 

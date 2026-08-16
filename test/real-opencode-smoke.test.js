@@ -9,6 +9,7 @@ import { ReviewStore } from "../dist/storage/reviews.js"
 import { createMmarTools } from "../dist/tools.js"
 import { ReviewLifecycleHooks } from "../dist/lifecycleHooks.js"
 import { PersistentReviewLifecycle } from "../dist/storage/lifecycle.js"
+import { laneRegistry } from "../dist/lanes.js"
 
 const pluginEntry = new URL("../dist/index.js", import.meta.url)
 const bundledSkills = new URL("../assets/skills", import.meta.url)
@@ -103,6 +104,10 @@ function parseToolOutput(value) {
   return JSON.parse(value)
 }
 
+function taskRules(agent) {
+  return agent.permission.filter(({ permission }) => permission === "task").map(({ pattern, action }) => ({ pattern, action }))
+}
+
 test("real OpenCode loads the local plugin alongside legacy agents and enforces MMAR lifecycle", { skip: !commandExists("opencode") ? "opencode binary is unavailable" : false }, async () => {
   const fixture = mkdtempSync(join(tmpdir(), "opencode-multireview-real-smoke-"))
   const project = join(fixture, "project")
@@ -122,6 +127,7 @@ test("real OpenCode loads the local plugin alongside legacy agents and enforces 
     enabled_providers: ["github-copilot"],
     disabled_providers: ["github-copilot", "llm-gateway"],
     mcp: {},
+    agent: { caller: { mode: "primary", permission: { task: "allow" } } },
   }
   writeFileSync(join(project, "opencode.json"), JSON.stringify(config), "utf8")
   const env = isolatedEnvironment(fixture)
@@ -143,11 +149,9 @@ test("real OpenCode loads the local plugin alongside legacy agents and enforces 
     assert.equal(mmarSkill.location, new URL(bundledSkillFile).pathname)
     assert.equal(existsSync(join(project, ".opencode", "skills", "mmar", "SKILL.md")), false)
 
-    for (const name of ["mmar_orchestrator", "mmar_correctness", "mmar_codestyle", "mmar_testing", "mmar_intent"]) {
-      const agent = JSON.parse(runOpenCode(["debug", "agent", name], project, env))
-      assert.equal(agent.name, name)
-      assert.match(agent.prompt, /MMAR|internal MMAR lane/)
-    }
+    const orchestratorDebug = JSON.parse(runOpenCode(["debug", "agent", "mmar_orchestrator"], project, env))
+    assert.equal(orchestratorDebug.name, "mmar_orchestrator")
+    assert.match(orchestratorDebug.prompt, /MMAR/)
 
     const port = await reservePort()
     server = spawn("opencode", ["serve", "--hostname", "127.0.0.1", "--port", String(port)], {
@@ -161,15 +165,25 @@ test("real OpenCode loads the local plugin alongside legacy agents and enforces 
     const serverSkillPath = serverConfig.skills.paths.find((path) => path.includes("opencode-multireview-plugin"))
     assert.equal(serverSkillPath, new URL(bundledSkills).pathname)
     assert.equal(existsSync(join(serverSkillPath, "mmar", "SKILL.md")), true)
+    assert.equal(serverConfig.subagent_depth >= 2, true)
 
+    // /agent proves OpenCode normalized the plugin's permission config. It
+    // does not prove native TaskTool filtering or a nested model dispatch;
+    // OpenCode exposes no stable direct API for either assertion.
     const agents = await getJson(port, "/agent")
     const agentNames = agents.map(({ name }) => name)
-    assert.deepEqual(agentNames.filter((name) => name.startsWith("mmar_")).sort(), [
-      "mmar_codestyle",
-      "mmar_correctness",
-      "mmar_intent",
-      "mmar_orchestrator",
-      "mmar_testing",
+    const specialists = laneRegistry.map((lane) => lane.specialistAgent)
+    assert.deepEqual(agentNames.filter((name) => name.startsWith("mmar_")).sort(), [...specialists, "mmar_orchestrator"].sort())
+    assert.equal(agents.find(({ name }) => name === "mmar_orchestrator").hidden, false)
+    for (const name of specialists) assert.equal(agents.find((agent) => agent.name === name).hidden, true)
+    const caller = agents.find(({ name }) => name === "caller")
+    assert.ok(caller)
+    assert.deepEqual(taskRules(caller).slice(-specialists.length), specialists.map((pattern) => ({ pattern, action: "deny" })))
+    const orchestrator = agents.find(({ name }) => name === "mmar_orchestrator")
+    assert.ok(orchestrator)
+    assert.deepEqual(taskRules(orchestrator).slice(-specialists.length - 1), [
+      { pattern: "*", action: "deny" },
+      ...specialists.map((pattern) => ({ pattern, action: "allow" })),
     ])
     for (const legacy of ["multireview", "_correctness", "_codestyle", "_testing"]) assert.ok(agentNames.includes(legacy), `missing legacy agent ${legacy}`)
 
