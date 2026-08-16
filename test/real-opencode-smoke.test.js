@@ -191,6 +191,7 @@ test("real OpenCode loads the local plugin alongside legacy agents and enforces 
       reviewId: begun.reviewId,
       roundId: begun.roundId,
       fencingToken: begun.fencingToken,
+      laneResults: ["correctness", "codestyle", "testing"].map((lane) => ({ lane, status: "completed" })),
       validFindings: [{
         disposition: "valid",
         severity: "LOW",

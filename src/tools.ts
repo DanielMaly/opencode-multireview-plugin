@@ -1,10 +1,11 @@
 import { tool, type ToolContext, type ToolDefinition } from "@opencode-ai/plugin"
 import { relative } from "node:path"
-import { findingCategories, findingDispositions, findingSeverities } from "./findings.js"
+import { findingDispositions, findingSeverities } from "./findings.js"
 import { canonicalPath, normalizeTarget, resolveExplicitGitWorktree, resolveRepositoryIdentity, resolveReviewIdentity, targetKinds, type RepositoryIdentity, type TargetInput } from "./repository.js"
 import { intentTypes, LEGACY_SESSION_ID } from "./review.js"
 import type { DatabaseOptions } from "./storage/database.js"
 import type { ReviewStore } from "./storage/reviews.js"
+import { normalizeLanes } from "./lanes.js"
 
 const z = tool.schema
 
@@ -27,7 +28,7 @@ const intentSchema = z.object({
 const findingSchema = z.object({
   disposition: z.enum(findingDispositions),
   severity: z.enum(findingSeverities),
-  category: z.enum(findingCategories),
+  category: z.string().trim().min(1),
   title: z.string(),
   bodyMarkdown: z.string(),
   wontfix: z.string().optional(),
@@ -49,6 +50,7 @@ const beginArgsSchema = z.object({
   baseRef: z.string().trim().min(1),
   requestScope: z.string().trim().min(1),
   intent: intentSchema.nullable().optional(),
+  lanes: z.array(z.string()).optional(),
 }).strict()
 
 const completeArgsSchema = z.object({
@@ -56,6 +58,11 @@ const completeArgsSchema = z.object({
   roundId: idSchema,
   fencingToken: idSchema,
   intent: intentSchema.nullable().optional(),
+  laneResults: z.array(z.object({
+    lane: z.string().trim().min(1),
+    status: z.enum(["completed", "failed"]),
+    failureReason: z.string().trim().min(1).optional(),
+  }).strict()).optional(),
   validFindings: z.array(findingSchema).optional(),
   ignoredFindings: z.array(findingSchema).optional(),
   uncertainties: z.array(uncertaintySchema).optional(),
@@ -119,14 +126,15 @@ export function createMmarTools(databaseOptions: DatabaseOptions = {}): Record<s
   }
 
   const begin = tool({
-    description: "Begin a fenced MMAR review round for the trusted current worktree.",
+    description: "Begin a fenced MMAR review round for the trusted current worktree, selecting exact review lanes and returning the effective lanes.",
     args: beginArgsSchema.shape,
     async execute(args, context) {
       const input = beginArgsSchema.parse(args)
       const worktree = trustedWriteRepository(context)
       const identity = resolveReviewIdentity(worktree, input.baseRef)
       const target = normalizeTarget(input.target as TargetInput, identity)
-      const review = (await getStore()).begin({ identity, target, intent: input.intent ?? undefined, sessionID: context.sessionID })
+      const lanes = normalizeLanes(input.lanes, input.intent !== undefined && input.intent !== null)
+      const review = (await getStore()).begin({ identity, target, intent: input.intent ?? undefined, lanes, sessionID: context.sessionID })
       return json({
         ...review,
         requestScope: input.requestScope,
@@ -144,7 +152,7 @@ export function createMmarTools(databaseOptions: DatabaseOptions = {}): Record<s
   })
 
   const complete = tool({
-    description: "Complete one MMAR review round with its fenced structured snapshot.",
+    description: "Complete one MMAR review round with its fenced structured snapshot and exactly one terminal lane outcome for every effective lane.",
     args: completeArgsSchema.shape,
     async execute(args, context) {
       const input = completeArgsSchema.parse(args)
@@ -158,6 +166,7 @@ export function createMmarTools(databaseOptions: DatabaseOptions = {}): Record<s
         fencingToken: input.fencingToken,
         sessionID: context.sessionID,
         intent: input.intent ?? undefined,
+        laneResults: input.laneResults,
         validFindings: input.validFindings ?? [],
         ignoredFindings: input.ignoredFindings ?? [],
         uncertainties: input.uncertainties ?? [],

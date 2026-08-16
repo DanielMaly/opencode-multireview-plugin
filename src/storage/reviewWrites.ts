@@ -8,13 +8,16 @@ import {
 import { newReviewId } from "../repository.js"
 import { intentValues, LEGACY_SESSION_ID, sessionValue, type BeginReviewRequest, type BeginReviewResult, type CompleteReviewRequest } from "../review.js"
 import { previousIgnored } from "./reviewReads.js"
-import { resolveMarkers } from "./reviewLifecycle.js"
+import { activeLaneSnapshot, resolveMarkers } from "./reviewLifecycle.js"
+import { laneByName, normalizeLanes, validateFindingOwnership } from "../lanes.js"
+import type { LaneResult } from "../review.js"
 
 function now(): string {
   return new Date().toISOString()
 }
 
 export function begin(options: DatabaseOptions, request: BeginReviewRequest): BeginReviewResult {
+  const lanes = normalizeLanes(request.lanes, request.intent !== undefined && request.intent !== null)
   return withDatabase(options, (database) => {
     database.exec("BEGIN IMMEDIATE")
     try {
@@ -30,8 +33,9 @@ export function begin(options: DatabaseOptions, request: BeginReviewRequest): Be
         ? database.prepare("SELECT fencing_token, acquired_at FROM review_locks WHERE review_id = ?").get(existing.id) as { fencing_token: string; acquired_at: string } | undefined
         : undefined
       if (existing && lock) {
+        const activeLanes = activeLaneSnapshot(database, existing.id)
         database.exec("COMMIT")
-        return { reviewId: existing.id, locked: true, acquiredAt: lock.acquired_at, previousIgnored: [] }
+        return { reviewId: existing.id, locked: true, acquiredAt: lock.acquired_at, previousIgnored: [], lanes: activeLanes.lanes }
       }
       let projectId: number
       if (project) {
@@ -100,8 +104,9 @@ export function begin(options: DatabaseOptions, request: BeginReviewRequest): Be
         )
       }
       database.prepare("UPDATE reviews SET current_intent_type = ?, current_intent_ref = ?, updated_at = ? WHERE id = ?").run(intentType, intentRef, timestamp, stableReviewId)
-      const previousRows = previousIgnored(database, stableReviewId)
+      const previousRows = previousIgnored(database, stableReviewId, lanes)
       const fencingToken = randomUUID()
+      const roundId = randomUUID()
       const sessionID = sessionValue(request.sessionID)
       database.prepare("INSERT INTO review_locks (review_id, fencing_token, acquired_at, session_id) VALUES (?, ?, ?, ?)").run(
         stableReviewId,
@@ -109,14 +114,25 @@ export function begin(options: DatabaseOptions, request: BeginReviewRequest): Be
         timestamp,
         sessionID ?? LEGACY_SESSION_ID,
       )
+      database.prepare("UPDATE review_locks SET pending_round_id = ? WHERE review_id = ? AND fencing_token = ?").run(roundId, stableReviewId, fencingToken)
+      for (const lane of lanes) {
+        database.prepare("INSERT INTO review_round_lanes (round_id, review_id, lane, status, failure_reason, created_at, updated_at) VALUES (?, ?, ?, NULL, NULL, ?, ?)").run(
+          roundId,
+          stableReviewId,
+          lane,
+          timestamp,
+          timestamp,
+        )
+      }
       database.exec("COMMIT")
       return {
         reviewId: stableReviewId,
-        roundId: randomUUID(),
+        roundId,
         fencingToken,
         acquiredAt: timestamp,
         locked: false,
         previousIgnored: previousRows,
+        lanes,
       }
     } catch (error) {
       try { database.exec("ROLLBACK") } catch { /* retain original error */ }
@@ -129,30 +145,61 @@ export function complete(options: DatabaseOptions, request: CompleteReviewReques
   return withDatabase(options, (database) => {
     database.exec("BEGIN IMMEDIATE")
     try {
-      const payload = normalizeRoundPayload(request.validFindings, request.ignoredFindings, request.uncertainties)
-      const payloadHash = hashRoundPayload(payload)
       const existingRound = database.prepare("SELECT payload_hash, completed_session_id FROM review_rounds WHERE id = ? AND review_id = ?").get(request.roundId, request.reviewId) as {
         payload_hash: string
         completed_session_id: string | null
       } | undefined
+      let activeLock: {
+        fencing_token: string
+        pending_round_id: string | null
+        session_id: string
+        current_intent_type: string | null
+        current_intent_ref: string | null
+        lane_count: number
+      } | undefined
+      if (!existingRound) {
+        activeLock = database.prepare("SELECT l.fencing_token, l.pending_round_id, l.session_id, r.current_intent_type, r.current_intent_ref, (SELECT COUNT(*) FROM review_round_lanes WHERE review_id = l.review_id) AS lane_count FROM review_locks l JOIN reviews r ON r.id = l.review_id WHERE l.review_id = ?").get(request.reviewId) as typeof activeLock
+        if (!activeLock) throw new Error("review lock fencing token is stale or missing")
+        const hasMatchingLock = activeLock.fencing_token === request.fencingToken
+        if (!hasMatchingLock) throw new Error("review lock fencing token is stale or missing")
+        const hasPendingRound = activeLock.pending_round_id !== null
+        const pendingRoundMatches = activeLock.pending_round_id === request.roundId
+        const isLegacyPending = !hasPendingRound && activeLock.lane_count === 0
+        const pendingRoundMismatch = hasPendingRound && !pendingRoundMatches
+        // A lane-aware lock without pending_round_id violates migration 003; legacy pre-003 locks have no lane rows.
+        const unsupportedMissingPendingRound = !hasPendingRound && !isLegacyPending
+        if (pendingRoundMismatch || unsupportedMissingPendingRound) throw new Error("review round does not match the active lock pending round")
+      }
+      const laneRows = database.prepare("SELECT lane, status, failure_reason FROM review_round_lanes WHERE round_id = ? AND review_id = ? ORDER BY lane").all(request.roundId, request.reviewId) as Array<{
+        lane: string
+        status: "completed" | "failed" | null
+        failure_reason: string | null
+      }>
+      const laneResults = validateLaneResults(request.laneResults, laneRows)
+      const payload = normalizeRoundPayload(request.validFindings, request.ignoredFindings, request.uncertainties)
+      if (laneRows.length > 0) {
+        for (const finding of [...payload.validFindings, ...payload.ignoredFindings]) {
+          validateFindingOwnership(finding.category, finding.sourceAgents, laneRows.map((row) => row.lane))
+        }
+      }
+      let expectedIntent: { intent_type: string | null; intent_ref: string | null } | undefined
       if (existingRound) {
+        expectedIntent = database.prepare("SELECT intent_type, intent_ref FROM review_rounds WHERE id = ? AND review_id = ?").get(request.roundId, request.reviewId) as typeof expectedIntent
+      } else if (activeLock) {
+        expectedIntent = { intent_type: activeLock.current_intent_type, intent_ref: activeLock.current_intent_ref }
+      }
+      validateRequiredLaneIntent(laneRows.map((row) => row.lane), expectedIntent, request.intent)
+      const payloadHash = hashRoundPayload(laneRows.length === 0 ? payload : { ...payload, laneResults })
+      if (existingRound) {
+        // Fencing is deliberately not checked here: the payload hash and completed session bind this round, while an active lock may belong to a newer round.
         if (existingRound.payload_hash !== payloadHash) throw new Error("round retry payload differs from the original")
         const requestSessionID = sessionValue(request.sessionID)
-        if (requestSessionID && existingRound.completed_session_id !== null && existingRound.completed_session_id !== requestSessionID) {
+        const hasRequestSession = requestSessionID !== null
+        const completedByDifferentSession = existingRound.completed_session_id !== null && existingRound.completed_session_id !== requestSessionID
+        if (hasRequestSession && completedByDifferentSession) {
           throw new Error("review lock session ownership mismatch")
         }
-        const activeLock = database.prepare("SELECT fencing_token, session_id FROM review_locks WHERE review_id = ?").get(request.reviewId) as {
-          fencing_token: string
-          session_id: string
-        } | undefined
-        if (activeLock && activeLock.fencing_token !== request.fencingToken) throw new Error("review lock fencing token is stale or missing")
-        const requestHasSession = requestSessionID !== null
-        const activeLockHasSessionMismatch = activeLock !== undefined && activeLock.session_id !== requestSessionID
-        const activeLockIsLegacy = activeLock?.session_id === LEGACY_SESSION_ID
-        if (requestHasSession && activeLockHasSessionMismatch) {
-          if (!activeLockIsLegacy) throw new Error("review lock session ownership mismatch")
-        }
-        if (requestSessionID && existingRound.completed_session_id === null) {
+        if (hasRequestSession && existingRound.completed_session_id === null) {
           database.prepare("UPDATE review_rounds SET completed_session_id = ? WHERE id = ? AND review_id = ? AND completed_session_id IS NULL").run(
             requestSessionID,
             request.roundId,
@@ -163,14 +210,13 @@ export function complete(options: DatabaseOptions, request: CompleteReviewReques
         database.exec("COMMIT")
         return { roundId: request.roundId, idempotent: true }
       }
-      const lock = database.prepare("SELECT fencing_token, session_id FROM review_locks WHERE review_id = ?").get(request.reviewId) as {
-        fencing_token: string
-        session_id: string
-      } | undefined
-      if (!lock || lock.fencing_token !== request.fencingToken) throw new Error("review lock fencing token is stale or missing")
       const requestSessionID = sessionValue(request.sessionID)
-      const isLegacyLock = lock.session_id === LEGACY_SESSION_ID
-      if (requestSessionID && !isLegacyLock && lock.session_id !== requestSessionID) throw new Error("review lock session ownership mismatch")
+      const isLegacyLock = activeLock?.session_id === LEGACY_SESSION_ID
+      const hasSessionMismatch = activeLock !== undefined && activeLock.session_id !== requestSessionID
+      const requestHasSession = requestSessionID !== null
+      const sessionMismatchWithBoundLock = requestHasSession && hasSessionMismatch
+      const sessionMismatchRequiresRejection = sessionMismatchWithBoundLock && !isLegacyLock
+      if (sessionMismatchRequiresRejection) throw new Error("review lock session ownership mismatch")
       const latest = database.prepare("SELECT COALESCE(MAX(ordinal), 0) AS ordinal FROM review_rounds WHERE review_id = ?").get(request.reviewId) as { ordinal: number }
       const ordinal = Number(latest.ordinal) + 1
       const [intentType, intentRef] = intentValues(request.intent)
@@ -185,6 +231,16 @@ export function complete(options: DatabaseOptions, request: CompleteReviewReques
         completedAt,
         requestSessionID,
       )
+      for (const result of laneResults) {
+        database.prepare("UPDATE review_round_lanes SET status = ?, failure_reason = ?, updated_at = ? WHERE round_id = ? AND review_id = ? AND lane = ?").run(
+          result.status,
+          result.failureReason ?? null,
+          completedAt,
+          request.roundId,
+          request.reviewId,
+          result.lane,
+        )
+      }
       const uncertaintyIds: number[] = []
       for (let index = 0; index < payload.uncertainties.length; index += 1) {
         const uncertainty = payload.uncertainties[index]
@@ -210,4 +266,53 @@ export function complete(options: DatabaseOptions, request: CompleteReviewReques
       throw error
     }
   })
+}
+
+function validateRequiredLaneIntent(
+  lanes: string[],
+  expected: { intent_type: string | null; intent_ref: string | null } | undefined,
+  actual: CompleteReviewRequest["intent"],
+): void {
+  const requiresIntent = lanes.some((name) => laneByName(name)?.requiresIntent === true)
+  if (!requiresIntent) return
+  const [actualType, actualRef] = intentValues(actual)
+  const matchesExpected = expected?.intent_type === actualType && expected.intent_ref === actualRef
+  if (!matchesExpected) throw new Error("intent reference must match the reference established at review begin")
+}
+
+function validateLaneResults(requested: LaneResult[] | undefined, rows: Array<{ lane: string; status: "completed" | "failed" | null; failure_reason: string | null }>): LaneResult[] {
+  if (rows.length === 0) {
+    if (requested !== undefined) throw new Error("laneResults are not supported for legacy review rounds")
+    return []
+  }
+  if (!requested) throw new Error("laneResults are required for this review round")
+  if (requested.length !== rows.length) throw new Error("laneResults must account for every requested lane exactly once")
+  const rowNames = new Set(rows.map((row) => row.lane))
+  const resultNames = new Set<string>()
+  for (const result of requested) {
+    if (typeof result.lane !== "string" || !rowNames.has(result.lane)) throw new Error(`lane result ${result.lane} is not requested for this review round`)
+    if (resultNames.has(result.lane)) throw new Error("laneResults must not contain duplicates")
+    resultNames.add(result.lane)
+    if (result.status !== "completed" && result.status !== "failed") throw new Error("lane result status is invalid")
+  }
+  if (resultNames.size !== rowNames.size) throw new Error("laneResults must account for every requested lane exactly once")
+  return rows.map((row) => canonicalLaneResult(requested.find((result) => result.lane === row.lane) as LaneResult))
+}
+
+function canonicalLaneResult(result: LaneResult): LaneResult {
+  const hasFailureReason = Object.hasOwn(result, "failureReason")
+  if (result.status === "completed") {
+    if (hasFailureReason) throw new Error("completed lane results must not include failureReason")
+    return { lane: result.lane, status: result.status }
+  }
+  if (!hasFailureReason) return { lane: result.lane, status: result.status }
+  const failureReason = normalizeFailureReason(result.failureReason)
+  return { lane: result.lane, status: result.status, failureReason }
+}
+
+function normalizeFailureReason(value: unknown): string {
+  if (typeof value !== "string") throw new Error("failureReason must be a non-empty string")
+  const normalized = value.trim().replace(/\s+/g, " ")
+  if (!normalized) throw new Error("failureReason must be a non-empty string")
+  return normalized
 }

@@ -1,9 +1,11 @@
 import { createHash } from "node:crypto"
+import { laneRegistry } from "./lanes.js"
+import type { LaneResult } from "./review.js"
 
 export const findingSeverities = ["CRITICAL", "HIGH", "MEDIUM", "LOW"] as const
 export type FindingSeverity = (typeof findingSeverities)[number]
-export const findingCategories = ["CORRECTNESS", "CODESTYLE", "TESTING", "INTENT"] as const
-export type FindingCategory = (typeof findingCategories)[number]
+// Categories are intentionally runtime-validated strings because the lane registry is extensible.
+export type FindingCategory = string
 export const findingDispositions = ["valid", "ignored"] as const
 export type FindingDisposition = (typeof findingDispositions)[number]
 
@@ -35,6 +37,7 @@ export interface NormalizedRoundPayload {
   validFindings: NormalizedFinding[]
   ignoredFindings: NormalizedFinding[]
   uncertainties: IntentUncertainty[]
+  laneResults?: LaneResult[]
 }
 
 function requiredText(name: string, value: unknown): string {
@@ -55,7 +58,7 @@ function canonical(value: unknown): string {
 export function normalizeFinding(input: FindingInput): NormalizedFinding {
   if (!input || !findingDispositions.includes(input.disposition)) throw new Error("finding disposition is invalid")
   if (!findingSeverities.includes(input.severity)) throw new Error("finding severity is invalid")
-  if (!findingCategories.includes(input.category)) throw new Error("finding category is invalid")
+  if (!laneRegistry.some((lane) => lane.category === input.category)) throw new Error("finding category is invalid")
   const disposition = input.disposition
   const wontfix = input.wontfix === undefined ? undefined : requiredText("finding wontfix", input.wontfix)
   if (disposition === "ignored" && !wontfix) throw new Error("ignored findings require wontfix")

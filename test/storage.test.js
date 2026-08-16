@@ -13,6 +13,7 @@ import { ensureDatabaseDirectory } from "../dist/storage/path.js";
 import { createMmarTools } from "../dist/tools.js";
 import { hashRoundPayload } from "../dist/findings.js";
 import { LEGACY_SESSION_ID } from "../dist/review.js";
+import { serializeReviewMarkdown } from "../dist/markdown.js";
 
 function temporaryPath() {
   const directory = mkdtempSync(join(tmpdir(), "opencode-multireview-storage-"));
@@ -49,6 +50,12 @@ function validFinding(title = "Keep this") {
   };
 }
 
+function completeStore(store, request) {
+  const lanes = request.laneResults ? [] : ["correctness", "codestyle", "testing", ...(request.intent ? ["intent"] : [])];
+  const laneResults = request.laneResults ?? lanes.map((lane) => ({ lane, status: "completed" }));
+  return store.complete({ ...request, laneResults });
+}
+
 function ignoredFinding(title = "Ignore this") {
   return {
     disposition: "ignored",
@@ -65,14 +72,14 @@ test("migrates a fresh database and is repeatable with rollback journal and fore
   const { directory, databasePath } = temporaryPath();
   try {
     const first = openDatabase({ databasePath });
-    assert.equal(first.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 2);
+    assert.equal(first.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 3);
     assert.equal(first.prepare("SELECT session_id FROM review_locks").get(), undefined);
     assert.equal(first.prepare("SELECT name FROM sqlite_master WHERE name = 'review_lifecycle_markers'").get().name, "review_lifecycle_markers");
     assert.equal(first.prepare("PRAGMA foreign_keys").get().foreign_keys, 1);
     assert.equal(first.prepare("PRAGMA journal_mode").get().journal_mode, "delete");
     first.close();
     const second = openDatabase({ databasePath });
-    assert.equal(second.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 2);
+    assert.equal(second.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 3);
     second.close();
   } finally {
     rmSync(directory, { recursive: true, force: true });
@@ -152,6 +159,34 @@ test("upgrades v1 lifecycle data and supports legacy completion compatibility", 
       roundId: completedRoundId,
       fencingToken: completedToken,
     }, { ...context, sessionID: "other-session" }), /session ownership/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("reads and exports a pre-lane completed round without inventing lane metadata", () => {
+  const { directory, databasePath } = temporaryPath();
+  const migrationDirectory = join(directory, "v1-migrations");
+  mkdirSync(migrationDirectory);
+  writeFileSync(join(migrationDirectory, "001_initial.sql"), readFileSync(new URL("../assets/migrations/001_initial.sql", import.meta.url)));
+  const reviewId = randomUUID();
+  const roundId = randomUUID();
+  const timestamp = "2026-01-01T00:00:00.000Z";
+  try {
+    const repository = resolveRepositoryIdentity(directory);
+    const database = openDatabase({ databasePath, migrationDirectory });
+    database.prepare("INSERT INTO projects (id, project_key, root_path, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?, ?)").run(1, repository.projectKey, repository.rootPath, timestamp, timestamp);
+    database.prepare("INSERT INTO worktrees (id, project_id, path, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?, ?)").run(1, 1, repository.worktreePath, timestamp, timestamp);
+    database.prepare("INSERT INTO reviews (id, project_id, worktree_id, target_kind, target_key, target_label, base_ref, base_commit, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(reviewId, 1, 1, "custom", "legacy", "legacy", "main", "base", timestamp, timestamp);
+    database.prepare("INSERT INTO review_rounds (id, review_id, ordinal, payload_hash, completed_at) VALUES (?, ?, ?, ?, ?)").run(roundId, reviewId, 1, hashRoundPayload({ validFindings: [], ignoredFindings: [], uncertainties: [] }), timestamp);
+    database.close();
+
+    const store = new ReviewStore({ databasePath, migrationDirectory });
+    const round = store.getRound(reviewId, roundId);
+    assert.equal(round.lanes, undefined);
+    assert.equal(round.laneResults, undefined);
+    const markdown = serializeReviewMarkdown({ reviewId, targetKind: "custom", targetLabel: "legacy", baseRef: "main", baseCommit: "base" }, store.getSummary(reviewId), round);
+    assert.doesNotMatch(markdown, /Lanes:|Lane Outcomes/);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -241,20 +276,20 @@ test("isolates scopes, returns previous ignored snapshots, fences locks, and sup
     assert.equal(contention.reviewId, first.reviewId);
     assert.equal(store.list()[0].currentIntentRef, "PROJ-1");
     const firstCompletion = { reviewId: first.reviewId, roundId: first.roundId, fencingToken: first.fencingToken, intent: { type: "jira", ref: "PROJ-1" }, ignoredFindings: [ignoredFinding()] };
-    assert.equal(store.complete(firstCompletion).idempotent, false);
-    assert.equal(store.complete(firstCompletion).idempotent, true);
-    assert.throws(() => store.complete({ reviewId: first.reviewId, roundId: first.roundId, fencingToken: first.fencingToken, ignoredFindings: [ignoredFinding("Changed")] }), /payload differs/);
+    assert.equal(completeStore(store, firstCompletion).idempotent, false);
+    assert.equal(completeStore(store, firstCompletion).idempotent, true);
+    assert.throws(() => completeStore(store, { reviewId: first.reviewId, roundId: first.roundId, fencingToken: first.fencingToken, intent: { type: "jira", ref: "PROJ-1" }, laneResults: ["correctness", "codestyle", "testing", "intent"].map((lane) => ({ lane, status: "completed" })), ignoredFindings: [ignoredFinding("Changed")] }), /payload differs/);
     const second = store.begin({ identity: identity(), target: target("A") });
     assert.equal(second.previousIgnored.length, 1);
     const differentScope = store.begin({ identity: identity(), target: target("B") });
     assert.equal(differentScope.previousIgnored.length, 0);
     assert.equal(store.unlock(first.reviewId, first.fencingToken), false);
     assert.equal(store.unlock(first.reviewId, second.fencingToken), true);
-    assert.throws(() => store.complete({ reviewId: first.reviewId, roundId: second.roundId, fencingToken: second.fencingToken, validFindings: [validFinding()] }), /stale or missing/);
+    assert.throws(() => completeStore(store, { reviewId: first.reviewId, roundId: second.roundId, fencingToken: second.fencingToken, validFindings: [validFinding()] }), /stale or missing/);
     const third = store.begin({ identity: identity(), target: target("A") });
     assert.equal(third.previousIgnored.length, 1);
-    store.complete({ reviewId: differentScope.reviewId, roundId: differentScope.roundId, fencingToken: differentScope.fencingToken, validFindings: [validFinding()] });
-    store.complete({ reviewId: third.reviewId, roundId: third.roundId, fencingToken: third.fencingToken, validFindings: [validFinding("Second")], intent: null });
+    completeStore(store, { reviewId: differentScope.reviewId, roundId: differentScope.roundId, fencingToken: differentScope.fencingToken, validFindings: [validFinding()] });
+    completeStore(store, { reviewId: third.reviewId, roundId: third.roundId, fencingToken: third.fencingToken, validFindings: [validFinding("Second")], intent: null });
     assert.deepEqual(store.listRounds(first.reviewId).map((round) => round.ordinal), [1, 2]);
     assert.equal(store.getRound(first.reviewId, first.roundId).intent.ref, "PROJ-1");
     assert.equal(store.getRound(first.reviewId, third.roundId).intent, undefined);
@@ -326,11 +361,12 @@ test("roundtrips uncertainties, blockers, complete finding properties, and lates
   const { directory, databasePath } = temporaryPath();
   try {
     const store = new ReviewStore({ databasePath });
-    const review = store.begin({ identity: identity(), target: target("uncertainty") });
-    store.complete({
+    const review = store.begin({ identity: identity(), target: target("uncertainty"), intent: { type: "jira", ref: "MMAR-1" }, lanes: ["correctness", "codestyle", "testing", "intent"] });
+    completeStore(store, {
       reviewId: review.reviewId,
       roundId: review.roundId,
       fencingToken: review.fencingToken,
+      intent: { type: "jira", ref: "MMAR-1" },
       validFindings: [{ ...validFinding("Blocked"), severity: "CRITICAL", category: "INTENT", bodyMarkdown: "Evidence", sourceAgents: ["testing", "correctness"], blockedByUncertaintyIds: ["2", "1"] }],
       ignoredFindings: [ignoredFinding("Ignored property")],
       uncertainties: [
@@ -364,7 +400,7 @@ test("roundtrips uncertainties, blockers, complete finding properties, and lates
       contentHash: round.ignoredFindings[0].contentHash,
     });
     const next = store.begin({ identity: identity(), target: target("uncertainty") });
-    store.complete({ reviewId: next.reviewId, roundId: next.roundId, fencingToken: next.fencingToken, validFindings: [validFinding("Latest")] });
+    completeStore(store, { reviewId: next.reviewId, roundId: next.roundId, fencingToken: next.fencingToken, validFindings: [validFinding("Latest")] });
     assert.equal(store.getRound(review.reviewId).id, next.roundId);
   } finally {
     rmSync(directory, { recursive: true, force: true });
@@ -379,7 +415,7 @@ test("completion failure rolls back the round and preserves its lock", () => {
     const database = openDatabase({ databasePath });
     database.exec("CREATE TRIGGER fail_findings BEFORE INSERT ON findings BEGIN SELECT RAISE(ABORT, 'forced completion failure'); END");
     database.close();
-    assert.throws(() => store.complete({ reviewId: review.reviewId, roundId: review.roundId, fencingToken: review.fencingToken, validFindings: [validFinding()] }), /forced completion failure/);
+    assert.throws(() => completeStore(store, { reviewId: review.reviewId, roundId: review.roundId, fencingToken: review.fencingToken, validFindings: [validFinding()] }), /forced completion failure/);
     assert.equal(store.getRound(review.reviewId), undefined);
     assert.equal(store.inspectLock(review.reviewId).fencingToken, review.fencingToken);
   } finally {
@@ -396,7 +432,7 @@ test("persists session ownership across store restarts and prevents dispatch aft
     const restartedStore = new ReviewStore({ databasePath });
     assert.equal(restartedStore.hasActiveLockOwnedBySession("session-a", review.reviewId), true);
     assert.equal(restartedStore.hasActiveLockOwnedBySession("session-b", review.reviewId), false);
-    restartedStore.complete({
+    completeStore(restartedStore, {
       reviewId: review.reviewId,
       roundId: review.roundId,
       fencingToken: review.fencingToken,
@@ -426,7 +462,7 @@ test("deduplicates session-error markers and resolves them on same-session compl
     assert.equal(duplicate.markerId, first.markerId);
     assert.equal(duplicate.deduplicated, true);
     assert.equal(store.recordIncompleteDiagnosticMarker({ ...marker, markerKey: "another-error" }).deduplicated, false);
-    store.complete({
+    completeStore(store, {
       reviewId: review.reviewId,
       roundId: review.roundId,
       fencingToken: review.fencingToken,

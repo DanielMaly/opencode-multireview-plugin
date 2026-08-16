@@ -46,11 +46,21 @@ function parse(output) {
   return JSON.parse(output);
 }
 
+async function completeTool(tools, args, context) {
+  const lanes = args.intent ? ["correctness", "codestyle", "testing", "intent"] : ["correctness", "codestyle", "testing"];
+  const laneResults = args.reviewId && args.roundId && args.fencingToken && !Object.hasOwn(args, "laneResults")
+    ? lanes.map((lane) => ({ lane, status: "completed" }))
+    : undefined;
+  return tools.mmar_complete.execute(laneResults ? { ...args, laneResults } : args, context);
+}
+
 test("exposes exactly four tools and no model-controlled database or session arguments", () => {
   assert.deepEqual(Object.keys(mmarTools).sort(), ["mmar_begin", "mmar_complete", "mmar_get_findings", "mmar_list_reviews"]);
-  assert.deepEqual(Object.keys(mmarTools.mmar_begin.args).sort(), ["baseRef", "intent", "requestScope", "target"]);
+  assert.match(mmarTools.mmar_begin.description, /selecting exact review lanes/);
+  assert.match(mmarTools.mmar_complete.description, /exactly one terminal lane outcome/);
+  assert.deepEqual(Object.keys(mmarTools.mmar_begin.args).sort(), ["baseRef", "intent", "lanes", "requestScope", "target"]);
   assert.deepEqual(Object.keys(mmarTools.mmar_complete.args).sort(), [
-    "fencingToken", "ignoredFindings", "intent", "reviewId", "roundId", "uncertainties", "validFindings",
+    "fencingToken", "ignoredFindings", "intent", "laneResults", "reviewId", "roundId", "uncertainties", "validFindings",
   ]);
   assert.deepEqual(Object.keys(mmarTools.mmar_list_reviews.args), ["worktreePath"]);
   assert.deepEqual(Object.keys(mmarTools.mmar_get_findings.args).sort(), ["reviewId", "roundId", "worktreePath"]);
@@ -75,9 +85,9 @@ test("lists scoped reviews and retrieves latest or exact completed findings with
     assert.deepEqual(parse(await tools.mmar_list_reviews.execute({}, context(projectA))), []);
     const first = parse(await tools.mmar_begin.execute(beginArgs(undefined, "history"), context(projectA)));
     const firstRound = validFinding("First round");
-    await tools.mmar_complete.execute({ reviewId: first.reviewId, roundId: first.roundId, fencingToken: first.fencingToken, validFindings: [firstRound] }, context(projectA));
+    await completeTool(tools, { reviewId: first.reviewId, roundId: first.roundId, fencingToken: first.fencingToken, validFindings: [firstRound] }, context(projectA));
     const second = parse(await tools.mmar_begin.execute(beginArgs(undefined, "history"), context(projectA)));
-    await tools.mmar_complete.execute({ reviewId: second.reviewId, roundId: second.roundId, fencingToken: second.fencingToken, validFindings: [validFinding("Latest round")] }, context(projectA));
+    await completeTool(tools, { reviewId: second.reviewId, roundId: second.roundId, fencingToken: second.fencingToken, validFindings: [validFinding("Latest round")] }, context(projectA));
     mkdirSync(join(projectA, "nested"));
     const listed = parse(await tools.mmar_list_reviews.execute({}, { ...context(projectA), directory: join(projectA, "nested") }));
     assert.equal(listed.length, 1);
@@ -109,7 +119,7 @@ test("lists scoped reviews and retrieves latest or exact completed findings with
     const uncommitted = parse(await tools.mmar_begin.execute({ ...beginArgs(), target: { kind: "uncommitted" } }, context(projectA)));
     assert.equal(parse(await tools.mmar_list_reviews.execute({}, context(otherWorktree))).some(({ id }) => id === uncommitted.reviewId), false);
     await assert.rejects(() => tools.mmar_get_findings.execute({ reviewId: uncommitted.reviewId }, context(otherWorktree)), /trusted worktree scope/);
-    await tools.mmar_complete.execute({ reviewId: uncommitted.reviewId, roundId: uncommitted.roundId, fencingToken: uncommitted.fencingToken, validFindings: [validFinding("Uncommitted")] }, context(projectA));
+    await completeTool(tools, { reviewId: uncommitted.reviewId, roundId: uncommitted.roundId, fencingToken: uncommitted.fencingToken, validFindings: [validFinding("Uncommitted")] }, context(projectA));
     const selectedUncommitted = parse(await tools.mmar_get_findings.execute({ reviewId: uncommitted.reviewId, worktreePath: projectA }, context(otherWorktree)));
     assert.equal(selectedUncommitted.validFindings[0].title, "Uncommitted");
     assert.equal(parse(await tools.mmar_list_reviews.execute({ worktreePath: projectA }, context(otherWorktree))).some(({ id }) => id === uncommitted.reviewId), true);
@@ -136,7 +146,7 @@ test("allows explicit reads outside context containment and resolves symlinked a
   try {
     const linkedContext = { ...context(project), directory: outside };
     const begun = parse(await tools.mmar_begin.execute(beginArgs(undefined, "linked-history"), context(linked)));
-    await tools.mmar_complete.execute({
+    await completeTool(tools, {
       reviewId: begun.reviewId,
       roundId: begun.roundId,
       fencingToken: begun.fencingToken,
@@ -171,7 +181,7 @@ test("does not reuse an uncommitted review for a custom target from another work
   const tools = createMmarTools({ databasePath });
   try {
     const uncommitted = parse(await tools.mmar_begin.execute({ ...beginArgs(), target: { kind: "uncommitted" } }, context(project)));
-    await tools.mmar_complete.execute({
+    await completeTool(tools, {
       reviewId: uncommitted.reviewId,
       roundId: uncommitted.roundId,
       fencingToken: uncommitted.fencingToken,
@@ -197,12 +207,13 @@ test("retrieves the complete structured review round through the tool layer", as
   const databasePath = join(directory, "reviews.sqlite");
   const tools = createMmarTools({ databasePath });
   try {
-    const begun = parse(await tools.mmar_begin.execute(beginArgs(), context(directory)));
-    await tools.mmar_complete.execute({
+    const begun = parse(await tools.mmar_begin.execute({ ...beginArgs({ type: "jira", ref: "MMAR-42" }), lanes: ["correctness", "testing", "intent"] }, context(directory)));
+    await completeTool(tools, {
       reviewId: begun.reviewId,
       roundId: begun.roundId,
       fencingToken: begun.fencingToken,
       intent: { type: "jira", ref: "MMAR-42" },
+      laneResults: ["correctness", "testing", "intent"].map((lane) => ({ lane, status: "completed" })),
       validFindings: [{
         ...validFinding("Structured valid"),
         severity: "CRITICAL",
@@ -285,7 +296,7 @@ test("rejects invalid and out-of-scope retrievals with explicit completed-round 
       new RegExp(`Review ${pending.reviewId} has no completed rounds`),
     );
 
-    const completed = parse(await tools.mmar_complete.execute({
+    const completed = parse(await completeTool(tools, {
       reviewId: pending.reviewId,
       roundId: pending.roundId,
       fencingToken: pending.fencingToken,
@@ -322,7 +333,7 @@ test("rejects invalid and out-of-scope retrievals with explicit completed-round 
         ]) await assert.rejects(execute, /valid sessionID/);
       }
       await assert.rejects(() => tools.mmar_begin.execute(beginArgs(), context(projectA, agent)), /only to mmar_orchestrator/);
-      await assert.rejects(() => tools.mmar_complete.execute({
+      await assert.rejects(() => completeTool(tools, {
         reviewId: pending.reviewId,
         roundId: pending.roundId,
         fencingToken: "00000000-0000-0000-0000-000000000000",
@@ -368,13 +379,13 @@ test("binds completion to the trusted session and does not authorize a contender
     const lifecycle = new ReviewStore({ databasePath });
     assert.equal(lifecycle.hasActiveLockOwnedBySession("session-a", first.reviewId), true);
     assert.equal(lifecycle.hasActiveLockOwnedBySession("session-b", first.reviewId), false);
-    await assert.rejects(() => tools.mmar_complete.execute({
+    await assert.rejects(() => completeTool(tools, {
       reviewId: first.reviewId,
       roundId: first.roundId,
       fencingToken: first.fencingToken,
       validFindings: [validFinding()],
     }, context(directory, "mmar_orchestrator", "session-b")), /session ownership/);
-    assert.deepEqual(await tools.mmar_complete.execute({
+    assert.deepEqual(await completeTool(tools, {
       reviewId: first.reviewId,
       roundId: first.roundId,
       fencingToken: first.fencingToken,
@@ -393,7 +404,7 @@ test("executes completion, rejects stale tokens, and preserves historical intent
   const store = new ReviewStore({ databasePath });
   try {
     const first = parse(await tools.mmar_begin.execute(beginArgs({ type: "jira", ref: "PROJ-1" }), context(directory)));
-    const completed = parse(await tools.mmar_complete.execute({
+    const completed = parse(await completeTool(tools, {
       reviewId: first.reviewId,
       roundId: first.roundId,
       fencingToken: first.fencingToken,
@@ -403,7 +414,7 @@ test("executes completion, rejects stale tokens, and preserves historical intent
     assert.deepEqual(completed, { roundId: first.roundId, idempotent: false });
 
     const second = parse(await tools.mmar_begin.execute(beginArgs(), context(directory)));
-    assert.equal(parse(await tools.mmar_complete.execute({
+    assert.equal(parse(await completeTool(tools, {
       reviewId: second.reviewId,
       roundId: second.roundId,
       fencingToken: second.fencingToken,
@@ -414,7 +425,7 @@ test("executes completion, rejects stale tokens, and preserves historical intent
     assert.equal(store.getRound(first.reviewId, second.roundId).intent, undefined);
 
     const third = parse(await tools.mmar_begin.execute(beginArgs(), context(directory)));
-    await assert.rejects(() => tools.mmar_complete.execute({
+    await assert.rejects(() => completeTool(tools, {
       reviewId: third.reviewId,
       roundId: third.roundId,
       fencingToken: "00000000-0000-0000-0000-000000000000",
@@ -435,20 +446,20 @@ test("rejects completion from another project and another uncommitted worktree",
   const tools = createMmarTools({ databasePath });
   try {
     const review = parse(await tools.mmar_begin.execute(beginArgs(), context(projectA)));
-    await assert.rejects(() => tools.mmar_complete.execute({
+    await assert.rejects(() => completeTool(tools, {
       reviewId: review.reviewId, roundId: review.roundId, fencingToken: review.fencingToken, validFindings: [validFinding()],
     }, context(projectB)), /project scope/);
-    await tools.mmar_complete.execute({
+    await completeTool(tools, {
       reviewId: review.reviewId, roundId: review.roundId, fencingToken: review.fencingToken, validFindings: [validFinding("Project A")],
     }, context(projectA));
 
     const uncommitted = parse(await tools.mmar_begin.execute({ ...beginArgs(), target: { kind: "uncommitted" } }, context(projectA)));
-    await assert.rejects(() => tools.mmar_complete.execute({
+    await assert.rejects(() => completeTool(tools, {
       reviewId: uncommitted.reviewId, roundId: uncommitted.roundId, fencingToken: uncommitted.fencingToken, validFindings: [validFinding()],
     }, { ...context(projectA), directory: otherWorktree, worktree: otherWorktree }), /trusted worktree scope/);
 
     const shared = parse(await tools.mmar_begin.execute(beginArgs(undefined, "shared-worktree"), context(projectA)));
-    assert.equal(parse(await tools.mmar_complete.execute({
+    assert.equal(parse(await completeTool(tools, {
       reviewId: shared.reviewId, roundId: shared.roundId, fencingToken: shared.fencingToken, validFindings: [validFinding("Shared worktree")],
     }, context(otherWorktree))).idempotent, false);
   } finally {
@@ -468,8 +479,8 @@ test("rejects malformed payloads and untrusted, empty, or out-of-worktree contex
   try {
     await assert.rejects(() => tools.mmar_begin.execute({ target: { kind: "custom" } }, context(directory)), /invalid|expected/i);
     await assert.rejects(() => tools.mmar_begin.execute({ ...beginArgs(), worktreePath: directory }, context(directory)), /unrecognized|unknown|invalid/i);
-    await assert.rejects(() => tools.mmar_complete.execute({ reviewId: "not-an-id" }, context(directory)), /invalid|expected/i);
-    await assert.rejects(() => tools.mmar_complete.execute({ reviewId: "00000000-0000-0000-0000-000000000000", roundId: "00000000-0000-0000-0000-000000000000", fencingToken: "00000000-0000-0000-0000-000000000000", worktreePath: directory }, context(directory)), /unrecognized|unknown|invalid/i);
+    await assert.rejects(() => completeTool(tools, { reviewId: "not-an-id" }, context(directory)), /invalid|expected/i);
+    await assert.rejects(() => completeTool(tools, { reviewId: "00000000-0000-0000-0000-000000000000", roundId: "00000000-0000-0000-0000-000000000000", fencingToken: "00000000-0000-0000-0000-000000000000", worktreePath: directory }, context(directory)), /unrecognized|unknown|invalid/i);
     await assert.rejects(() => tools.mmar_begin.execute(beginArgs(), context(directory, "mmar_correctness")), /only to mmar_orchestrator/);
     await assert.rejects(() => tools.mmar_begin.execute(beginArgs(), { agent: "mmar_orchestrator", directory: "", worktree: "", sessionID: "session-a" }), /directory and worktree/);
     await assert.rejects(() => tools.mmar_begin.execute(beginArgs(), { agent: "mmar_orchestrator", directory: outside, worktree: directory, sessionID: "session-a" }), /outside/);
@@ -483,24 +494,31 @@ test("rejects malformed payloads and untrusted, empty, or out-of-worktree contex
 
 test("asserts exact orchestrator prompt contracts without claiming executable model orchestration", () => {
   const prompt = readFileSync(new URL("../assets/agents/mmar_orchestrator.md", import.meta.url), "utf8");
+  const skill = readFileSync(new URL("../assets/skills/mmar/SKILL.md", import.meta.url), "utf8");
   const retrieval = prompt.indexOf("## Historical retrieval");
   assert.ok(prompt.includes("## Required workflow for new review requests"));
-  const begin = prompt.indexOf("Call `mmar_begin` first");
+  const begin = prompt.indexOf("1. Call `mmar_begin` first");
   const read = prompt.indexOf("Obtain the changeset");
-  const spawn = prompt.indexOf("launch exactly these independent specialists");
   assert.ok(retrieval >= 0 && retrieval < begin);
   assert.match(prompt, /Historical retrieval[\s\S]*Callers may use the read-only[\s\S]*this workflow does not start a review/);
-  assert.ok(begin >= 0 && begin < read && begin < spawn);
+  assert.ok(begin >= 0 && begin < read);
   assert.match(prompt, /returned `reviewId` and `repository\.worktreePath` as the current review scope/);
   assert.match(prompt, /including both exact values in every specialist's compact scope as `reviewId` and `worktreePath`/);
   assert.match(prompt, /locked: true.*spawn nobody.*exit cleanly/s);
-  assert.match(prompt, /concurrently launch exactly these independent specialists/);
-  for (const specialist of ["mmar_correctness", "mmar_codestyle", "mmar_testing"]) assert.ok(prompt.includes(`- \`${specialist}\``));
-  assert.match(prompt, /any intent reference was supplied.*launch `mmar_intent`.*resolution failed/s);
+  assert.match(prompt, /concurrently launch exactly the selected specialist/);
+  assert.match(prompt, /effective `lanes` as authoritative/);
+  assert.match(prompt, /exactly one terminal `laneResults` entry for every effective lane/);
+  assert.match(prompt, /For the intent lane, give resolved content when available/);
   assert.match(prompt, /partial.*blocked.*runtime output only/s);
   assert.match(prompt, /prior ignored entries as revalidation candidates.*not exclusions/s);
   assert.match(prompt, /During an active lane, specialists may retrieve history only with the supplied current `reviewId` and `worktreePath`; they must not list or browse unrelated reviews/);
   assert.match(prompt, /After a successful begin, call `mmar_complete` exactly once/s);
+  assert.match(prompt, /canonical specialist name.*short lane alias/s);
+  assert.match(prompt, /exactly one `<mmar_request>` envelope.*version: 1/);
+  assert.match(prompt, /Reject malformed or multiple envelopes/);
+  assert.match(skill, /exactly one versioned request envelope[\s\S]*Reject malformed or multiple envelopes/);
+  assert.match(skill, /<mmar_request>[\s\S]*"version": 1/);
+  assert.match(skill, /"version": 1/);
   assert.doesNotMatch(prompt, /REVIEW_FINDINGS\.md|git excludes/);
   const intentPrompt = readFileSync(new URL("../assets/agents/mmar_intent.md", import.meta.url), "utf8");
   assert.match(intentPrompt, /use `mmar_get_findings` only for that review ID and worktree path/);

@@ -11,6 +11,7 @@ import type {
   ScopedReviewSummary,
 } from "../review.js"
 import { LEGACY_SESSION_ID } from "../review.js"
+import { findingCategoriesForLanes } from "../lanes.js"
 
 type FindingRow = {
   id: number
@@ -47,6 +48,12 @@ type RoundRow = {
   intent_type: IntentType | null
   intent_ref: string | null
   completed_at: string
+}
+
+type LaneRow = {
+  lane: string
+  status: "completed" | "failed" | null
+  failure_reason: string | null
 }
 
 function rowFinding(row: FindingRow): NormalizedFinding {
@@ -95,9 +102,10 @@ function summaryRows(database: SqliteDatabase, scope: { projectKey?: string; wor
   ) as SummaryRow[]
 }
 
-export function previousIgnored(database: SqliteDatabase, reviewId: string): IgnoredSnapshot[] {
+export function previousIgnored(database: SqliteDatabase, reviewId: string, lanes?: string[]): IgnoredSnapshot[] {
   const rows = database.prepare("SELECT id, disposition, severity, category, title, body_markdown, wontfix, source_agents_json, content_hash FROM findings WHERE round_id = (SELECT id FROM review_rounds WHERE review_id = ? ORDER BY ordinal DESC LIMIT 1) AND disposition = 'ignored' ORDER BY ordinal").all(reviewId) as FindingRow[]
-  return rows.map((row) => ({ id: Number(row.id), ...rowFinding(row) }))
+  const categories = lanes === undefined ? undefined : new Set(findingCategoriesForLanes(lanes))
+  return rows.filter((row) => categories === undefined || categories.has(row.category)).map((row) => ({ id: Number(row.id), ...rowFinding(row) }))
 }
 
 export function assertReviewScope(options: DatabaseOptions, reviewId: string, scope: ReviewScope): void {
@@ -185,12 +193,24 @@ function readRound(database: SqliteDatabase, row: RoundRow): ReviewRound {
     blockedByUncertaintyIds: blockedByFinding.get(Number(finding.id)) ?? [],
     ...(finding.disposition === "ignored" ? { id: Number(finding.id) } : {}),
   }))
+  const laneTable = database.prepare("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'review_round_lanes'").get()
+  const lanes = laneTable === undefined
+    ? []
+    : database.prepare("SELECT lane, status, failure_reason FROM review_round_lanes WHERE round_id = ? ORDER BY lane").all(row.id) as LaneRow[]
   return {
     id: row.id,
     reviewId: row.review_id,
     ordinal: Number(row.ordinal),
     payloadHash: row.payload_hash,
     ...(row.intent_type === null ? {} : { intent: { type: row.intent_type, ref: row.intent_ref as string } }),
+    ...(lanes.length === 0 ? {} : {
+      lanes: lanes.map((lane) => lane.lane),
+      laneResults: lanes.filter((lane): lane is LaneRow & { status: "completed" | "failed" } => lane.status !== null).map((lane) => ({
+        lane: lane.lane,
+        status: lane.status,
+        ...(lane.failure_reason === null ? {} : { failureReason: lane.failure_reason }),
+      })),
+    }),
     completedAt: row.completed_at,
     validFindings: mappedFindings.filter((finding): finding is NormalizedFinding => finding.disposition === "valid"),
     ignoredFindings: mappedFindings.filter((finding): finding is IgnoredSnapshot => finding.disposition === "ignored"),
