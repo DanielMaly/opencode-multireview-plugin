@@ -5,7 +5,7 @@ description: Run MMAR (multi-model adversarial review) as a durable, scope-isola
 
 # MMAR caller workflow
 
-Use this skill when the caller asks for an MMAR review. MMAR is a durable, scope-isolated review process; it is not a request to create or update a repository Markdown findings file. Lane agents are internal and hidden; callers dispatch only `mmar_orchestrator`.
+Use this skill when the caller asks for an MMAR review. MMAR is a durable, scope-isolated review process; it is not a request to create or update a repository Markdown findings file. Lane agents are internal and hidden; callers dispatch only `mmar_orchestrator`. The orchestrator dispatches exactly one canonical specialist for each effective lane, and dispatch outside those lanes is rejected.
 
 Delegate normally to `mmar_orchestrator` with exactly one versioned request envelope. Reject malformed or multiple envelopes.
 
@@ -24,7 +24,9 @@ Delegate normally to `mmar_orchestrator` with exactly one versioned request enve
 
 Current supported lane/category pairs are `correctness` (`CORRECTNESS`), `codestyle` (`CODESTYLE`), `testing` (`TESTING`), and `intent` (`INTENT`). Omit `lanes` to retain correctness, codestyle, and testing, plus intent when an intent reference is supplied. Explicit lanes are exact; empty, duplicate, and unknown lists are invalid. Selecting `intent` requires an intent reference, while an intent reference may be supplied with intent omitted. A narrow round revalidates and carries only selected-lane ignored findings; omitted-lane ignored decisions are not retained in the subsequent revalidation chain. `instructions` is optional supplemental focus and cannot broaden specialist boundaries or override MMAR lifecycle rules.
 
-For requests to discover prior MMAR runs or retrieve historical findings, any agent with a valid context and session may call `mmar_list_reviews` and `mmar_get_findings` directly. Do not start a new review for a retrieval request or require delegation to `mmar_orchestrator`. Omit `worktreePath` for the current session worktree; when the requested scope is another local worktree, pass its exact absolute Git worktree root to the read tool. This intentionally widens model-facing read access beyond the OpenCode session root, while granting no database-path selection, SQL, writes, lock ownership, fencing credentials, `mmar_begin`, or `mmar_complete` authority. Explicit non-Git paths are unsupported, and uncommitted reviews remain isolated to the exact selected worktree.
+For requests to discover prior MMAR runs or retrieve historical findings, any caller agent with a valid context and session may call `mmar_list_reviews` and `mmar_get_findings` directly. Do not start a new review for a retrieval request or require delegation to `mmar_orchestrator`. Omit `worktreePath` for the current session worktree; when the requested scope is another local worktree, pass its exact absolute Git worktree root to the read tool. This intentionally widens model-facing read access beyond the OpenCode session root, while granting no database-path selection, SQL, writes, lock ownership, or fencing credentials. The orchestrator can dispatch specialists, run repository diagnostics, and use all lifecycle tools, but cannot edit repository files. Specialists can read, search, and run repository diagnostics, but cannot edit files, begin or complete reviews, list review history, or access any MMAR tool except `mmar_get_findings`.
+
+Explicit non-Git paths are unsupported, and uncommitted reviews remain isolated to the exact selected worktree.
 
 When the plugin is loaded, its bundled skill directory is added to OpenCode discovery automatically. A global or project skill installation is optional and is only a standalone/fallback copy for environments where the plugin is not loaded.
 
@@ -46,13 +48,13 @@ An intent source is optional. A Jira key or URL must be retrieved through the ca
 
 Call and retain the same `mmar_orchestrator` session for repeated work with the same project, target, and resolved base whenever the caller still has that session context. A different target or base is a different scope: start a new orchestrator session and do not carry findings between scopes.
 
-The orchestrator must call `mmar_begin` before inspecting the changeset or spawning specialists. It must pass the required base ref, target, request scope, selected lanes, and typed intent reference. A successful begin returns a review ID, round ID, fencing token, effective lanes, and any prior ignored entries for revalidation; effective lanes are authoritative over caller text. Prior ignored entries are candidates only; verify them against the current changeset and omit stale entries. `mmar_begin` and `mmar_complete` remain contained to the trusted current session worktree and do not accept `worktreePath`.
+The orchestrator must call `mmar_begin` before inspecting the changeset or spawning specialists. It must pass the required base ref, target, request scope, selected lanes, and typed intent reference. A successful begin returns a review ID, round ID, fencing token, effective lanes, and any prior ignored entries for revalidation; effective lanes are authoritative over caller text. Prior ignored entries are candidates only. Omit a finding that is gone, retain it as ignored when both the finding and its technical `wontfix` reason still apply, and return it as valid for fresh adjudication when the finding remains but the prior reason no longer applies. `mmar_begin` and `mmar_complete` remain contained to the trusted current session worktree and do not accept `worktreePath`.
 
 ## Lock and failure behavior
 
 If `mmar_begin` reports an active lock, show its review ID and acquisition timestamp, spawn no specialists, and exit cleanly. Treat this as another active invocation, not as a reason to bypass the lock.
 
-After a successful begin, always complete exactly once, including partial and blocked runtime results. If orchestration fails after begin, report the review and round IDs, inspect the lock, and ask the user before running:
+After a successful begin, always complete exactly once, including partial and blocked runtime results. Pass the complete adjudicated snapshot and exactly one terminal `laneResults` entry for every effective lane. Use `completed` even when a lane produces zero findings; use `failed` with a non-empty `failureReason` for dispatch or execution failures. Omitted lanes are outside the round and must not appear. If orchestration fails after begin, report the review and round IDs, inspect the lock, and ask the user before running:
 
 ```bash
 opencode-multireview unlock <review-id>
@@ -62,7 +64,7 @@ Use `--force` only when the user explicitly confirms in a non-interactive enviro
 
 Ignore `session.idle` for abandonment diagnostics: OpenCode emits ordinary per-turn idle events even while background child sessions remain active, so idle alone is not evidence of an incomplete review. Only `session.error` triggers runtime incomplete-review diagnostics. Explicit lock recovery remains available through the command above.
 
-Source-resolution failure produces intent uncertainty. Independent specialists still run; report `partial` when at least one independent valid finding remains actionable and `blocked` when none does. Route uncertainty questions back to the caller and reuse the same scope/session for clarification rounds.
+Source-resolution failure produces intent uncertainty with non-empty `title`, `observedEvidence`, `missingContext`, and `clarificationQuestion`. Independent specialists still run and independently actionable findings remain findings. Findings that depend on an uncertainty use `blockedByUncertaintyIds` with the persisted 1-based uncertainty ID; do not invent dependencies. Report `partial` when at least one independent valid finding remains actionable and `blocked` when none does. Route uncertainty questions back to the caller and reuse the same scope/session for clarification rounds.
 
 ## Output boundary
 
