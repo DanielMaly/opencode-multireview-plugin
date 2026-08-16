@@ -13,6 +13,7 @@ import { ensureDatabaseDirectory } from "../dist/storage/path.js";
 import { createMmarTools } from "../dist/tools.js";
 import { hashRoundPayload } from "../dist/findings.js";
 import { LEGACY_SESSION_ID } from "../dist/review.js";
+import { serializeReviewMarkdown } from "../dist/markdown.js";
 
 function temporaryPath() {
   const directory = mkdtempSync(join(tmpdir(), "opencode-multireview-storage-"));
@@ -158,6 +159,34 @@ test("upgrades v1 lifecycle data and supports legacy completion compatibility", 
       roundId: completedRoundId,
       fencingToken: completedToken,
     }, { ...context, sessionID: "other-session" }), /session ownership/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("reads and exports a pre-lane completed round without inventing lane metadata", () => {
+  const { directory, databasePath } = temporaryPath();
+  const migrationDirectory = join(directory, "v1-migrations");
+  mkdirSync(migrationDirectory);
+  writeFileSync(join(migrationDirectory, "001_initial.sql"), readFileSync(new URL("../assets/migrations/001_initial.sql", import.meta.url)));
+  const reviewId = randomUUID();
+  const roundId = randomUUID();
+  const timestamp = "2026-01-01T00:00:00.000Z";
+  try {
+    const repository = resolveRepositoryIdentity(directory);
+    const database = openDatabase({ databasePath, migrationDirectory });
+    database.prepare("INSERT INTO projects (id, project_key, root_path, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?, ?)").run(1, repository.projectKey, repository.rootPath, timestamp, timestamp);
+    database.prepare("INSERT INTO worktrees (id, project_id, path, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?, ?)").run(1, 1, repository.worktreePath, timestamp, timestamp);
+    database.prepare("INSERT INTO reviews (id, project_id, worktree_id, target_kind, target_key, target_label, base_ref, base_commit, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(reviewId, 1, 1, "custom", "legacy", "legacy", "main", "base", timestamp, timestamp);
+    database.prepare("INSERT INTO review_rounds (id, review_id, ordinal, payload_hash, completed_at) VALUES (?, ?, ?, ?, ?)").run(roundId, reviewId, 1, hashRoundPayload({ validFindings: [], ignoredFindings: [], uncertainties: [] }), timestamp);
+    database.close();
+
+    const store = new ReviewStore({ databasePath, migrationDirectory });
+    const round = store.getRound(reviewId, roundId);
+    assert.equal(round.lanes, undefined);
+    assert.equal(round.laneResults, undefined);
+    const markdown = serializeReviewMarkdown({ reviewId, targetKind: "custom", targetLabel: "legacy", baseRef: "main", baseCommit: "base" }, store.getSummary(reviewId), round);
+    assert.doesNotMatch(markdown, /Lanes:|Lane Outcomes/);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

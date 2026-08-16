@@ -193,7 +193,10 @@ function readRound(database: SqliteDatabase, row: RoundRow): ReviewRound {
     blockedByUncertaintyIds: blockedByFinding.get(Number(finding.id)) ?? [],
     ...(finding.disposition === "ignored" ? { id: Number(finding.id) } : {}),
   }))
-  const lanes = database.prepare("SELECT lane, status, failure_reason FROM review_round_lanes WHERE round_id = ? ORDER BY lane").all(row.id) as LaneRow[]
+  const laneTable = database.prepare("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'review_round_lanes'").get()
+  const lanes = laneTable === undefined
+    ? []
+    : database.prepare("SELECT lane, status, failure_reason FROM review_round_lanes WHERE round_id = ? ORDER BY lane").all(row.id) as LaneRow[]
   return {
     id: row.id,
     reviewId: row.review_id,

@@ -4,7 +4,7 @@ import type { LaneResult } from "./review.js"
 
 export const findingSeverities = ["CRITICAL", "HIGH", "MEDIUM", "LOW"] as const
 export type FindingSeverity = (typeof findingSeverities)[number]
-export const findingCategories = [...new Set(laneRegistry.map((lane) => lane.category))] as string[]
+// Categories are intentionally runtime-validated strings because the lane registry is extensible.
 export type FindingCategory = string
 export const findingDispositions = ["valid", "ignored"] as const
 export type FindingDisposition = (typeof findingDispositions)[number]

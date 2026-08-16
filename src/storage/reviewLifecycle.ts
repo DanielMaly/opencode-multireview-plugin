@@ -2,6 +2,11 @@ import type { DatabaseOptions, SqliteDatabase } from "./database.js"
 import { withDatabase } from "./database.js"
 import { sessionValue, type IncompleteDiagnosticMarkerRequest, type IncompleteDiagnosticMarkerResult } from "../review.js"
 
+export type ActiveLaneSnapshot = {
+  lanes: string[]
+  laneAware: boolean
+}
+
 function now(): string {
   return new Date().toISOString()
 }
@@ -17,15 +22,22 @@ export function hasActiveLockOwnedBySession(options: DatabaseOptions, sessionID:
   })
 }
 
-export function activeReviewForSession(options: DatabaseOptions, sessionID: string): { reviewId: string; lanes: string[] } | undefined {
+export function activeReviewForSession(options: DatabaseOptions, sessionID: string): { reviewId: string; lanes: string[]; laneAware: boolean } | undefined {
   const owner = sessionValue(sessionID)
   if (!owner) return undefined
   return withDatabase(options, (database) => {
     const row = database.prepare("SELECT review_id FROM review_locks WHERE session_id = ? LIMIT 1").get(owner) as { review_id: string } | undefined
     if (!row) return undefined
-    const lanes = database.prepare("SELECT lane FROM review_round_lanes WHERE review_id = ? AND round_id = (SELECT pending_round_id FROM review_locks WHERE review_id = ?) AND status IS NULL ORDER BY lane").all(row.review_id, row.review_id) as Array<{ lane: string }>
-    return { reviewId: row.review_id, lanes: lanes.map((lane) => lane.lane) }
+    const snapshot = activeLaneSnapshot(database, row.review_id)
+    return { reviewId: row.review_id, ...snapshot }
   })
+}
+
+export function activeLaneSnapshot(database: SqliteDatabase, reviewId: string): ActiveLaneSnapshot {
+  const lock = database.prepare("SELECT pending_round_id FROM review_locks WHERE review_id = ?").get(reviewId) as { pending_round_id: string | null } | undefined
+  if (!lock || lock.pending_round_id === null) return { lanes: [], laneAware: false }
+  const lanes = database.prepare("SELECT lane FROM review_round_lanes WHERE review_id = ? AND round_id = ? AND status IS NULL ORDER BY lane").all(reviewId, lock.pending_round_id) as Array<{ lane: string }>
+  return { lanes: lanes.map((lane) => lane.lane), laneAware: true }
 }
 
 export function resolveMarkers(database: SqliteDatabase, sessionID: string, reviewId: string, timestamp: string): void {

@@ -41,14 +41,14 @@ export class ReviewLifecycleHooks {
 
   beforeTool(input: ToolBeforeInput, args: unknown): void {
     // OpenCode invokes this before-hook with the calling session; throwing here aborts task dispatch.
-    if (input.tool !== "task" || specialistType(args) === undefined) return
     const specialist = specialistType(args)
+    if (input.tool !== "task" || specialist === undefined) return
     if (!this.lifecycle.ownsActiveLock(input.sessionID)) {
       throw new Error("MMAR specialist dispatch requires an active review lock owned by this session")
     }
     const activeReview = this.lifecycle.activeReviewForSession(input.sessionID)
-    const lane = specialist === undefined ? undefined : laneForSpecialist(specialist)
-    if (!activeReview || !lane || !activeReview.lanes.includes(lane.name)) {
+    const lane = laneForSpecialist(specialist)
+    if (!activeReview || (activeReview.laneAware && (!lane || !activeReview.lanes.includes(lane.name)))) {
       throw new Error("MMAR specialist dispatch is outside the active review lanes")
     }
   }

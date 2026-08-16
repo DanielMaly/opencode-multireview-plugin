@@ -1,11 +1,11 @@
 import { tool, type ToolContext, type ToolDefinition } from "@opencode-ai/plugin"
 import { relative } from "node:path"
-import { findingCategories, findingDispositions, findingSeverities } from "./findings.js"
+import { findingDispositions, findingSeverities } from "./findings.js"
 import { canonicalPath, normalizeTarget, resolveExplicitGitWorktree, resolveRepositoryIdentity, resolveReviewIdentity, targetKinds, type RepositoryIdentity, type TargetInput } from "./repository.js"
 import { intentTypes, LEGACY_SESSION_ID } from "./review.js"
 import type { DatabaseOptions } from "./storage/database.js"
 import type { ReviewStore } from "./storage/reviews.js"
-import { laneNames, normalizeLanes } from "./lanes.js"
+import { normalizeLanes } from "./lanes.js"
 
 const z = tool.schema
 
@@ -126,7 +126,7 @@ export function createMmarTools(databaseOptions: DatabaseOptions = {}): Record<s
   }
 
   const begin = tool({
-    description: "Begin a fenced MMAR review round for the trusted current worktree.",
+    description: "Begin a fenced MMAR review round for the trusted current worktree, selecting exact review lanes and returning the effective lanes.",
     args: beginArgsSchema.shape,
     async execute(args, context) {
       const input = beginArgsSchema.parse(args)
@@ -141,7 +141,6 @@ export function createMmarTools(databaseOptions: DatabaseOptions = {}): Record<s
         target,
         baseRef: identity.baseRef,
         baseCommit: identity.baseCommit,
-        supportedLanes: laneNames(),
         repository: {
           rootPath: identity.rootPath,
           worktreePath: identity.worktreePath,
@@ -153,7 +152,7 @@ export function createMmarTools(databaseOptions: DatabaseOptions = {}): Record<s
   })
 
   const complete = tool({
-    description: "Complete one MMAR review round with its fenced structured snapshot.",
+    description: "Complete one MMAR review round with its fenced structured snapshot and exactly one terminal lane outcome for every effective lane.",
     args: completeArgsSchema.shape,
     async execute(args, context) {
       const input = completeArgsSchema.parse(args)

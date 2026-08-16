@@ -56,6 +56,8 @@ async function completeTool(tools, args, context) {
 
 test("exposes exactly four tools and no model-controlled database or session arguments", () => {
   assert.deepEqual(Object.keys(mmarTools).sort(), ["mmar_begin", "mmar_complete", "mmar_get_findings", "mmar_list_reviews"]);
+  assert.match(mmarTools.mmar_begin.description, /selecting exact review lanes/);
+  assert.match(mmarTools.mmar_complete.description, /exactly one terminal lane outcome/);
   assert.deepEqual(Object.keys(mmarTools.mmar_begin.args).sort(), ["baseRef", "intent", "lanes", "requestScope", "target"]);
   assert.deepEqual(Object.keys(mmarTools.mmar_complete.args).sort(), [
     "fencingToken", "ignoredFindings", "intent", "laneResults", "reviewId", "roundId", "uncertainties", "validFindings",
@@ -496,7 +498,6 @@ test("asserts exact orchestrator prompt contracts without claiming executable mo
   assert.ok(prompt.includes("## Required workflow for new review requests"));
   const begin = prompt.indexOf("1. Call `mmar_begin` first");
   const read = prompt.indexOf("Obtain the changeset");
-  const spawn = prompt.indexOf("launch exactly these independent specialists");
   assert.ok(retrieval >= 0 && retrieval < begin);
   assert.match(prompt, /Historical retrieval[\s\S]*Callers may use the read-only[\s\S]*this workflow does not start a review/);
   assert.ok(begin >= 0 && begin < read);
@@ -511,6 +512,7 @@ test("asserts exact orchestrator prompt contracts without claiming executable mo
   assert.match(prompt, /prior ignored entries as revalidation candidates.*not exclusions/s);
   assert.match(prompt, /During an active lane, specialists may retrieve history only with the supplied current `reviewId` and `worktreePath`; they must not list or browse unrelated reviews/);
   assert.match(prompt, /After a successful begin, call `mmar_complete` exactly once/s);
+  assert.match(prompt, /canonical specialist name.*short lane alias/s);
   assert.doesNotMatch(prompt, /REVIEW_FINDINGS\.md|git excludes/);
   const intentPrompt = readFileSync(new URL("../assets/agents/mmar_intent.md", import.meta.url), "utf8");
   assert.match(intentPrompt, /use `mmar_get_findings` only for that review ID and worktree path/);

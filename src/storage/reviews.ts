@@ -85,7 +85,7 @@ export class ReviewStore {
     return hasActiveLockOwnedBySession(this.options, sessionID, reviewId)
   }
 
-  activeReviewForSession(sessionID: string): { reviewId: string; lanes: string[] } | undefined {
+  activeReviewForSession(sessionID: string): { reviewId: string; lanes: string[]; laneAware: boolean } | undefined {
     return activeReviewForSession(this.options, sessionID)
   }
 

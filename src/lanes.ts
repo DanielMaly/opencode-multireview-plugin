@@ -29,6 +29,10 @@ export function laneForSpecialist(agent: string): LaneDefinition | undefined {
   return laneRegistry.find((lane) => lane.specialistAgent === agent)
 }
 
+export function laneForSourceAgent(agent: string): LaneDefinition | undefined {
+  return laneRegistry.find((lane) => lane.specialistAgent === agent || lane.name === agent)
+}
+
 export function findingCategoriesForLanes(lanes: string[]): string[] {
   return [...new Set(lanes.flatMap((name) => {
     const lane = laneByName(name)
@@ -60,7 +64,7 @@ export function validateFindingOwnership(category: string, sourceAgents: string[
   const selected = lanes.map(laneByName).filter((lane): lane is LaneDefinition => lane !== undefined)
   if (!selected.some((lane) => lane.category === category)) throw new Error(`finding category ${category} is outside the requested MMAR lanes`)
   for (const sourceAgent of sourceAgents) {
-    const sourceLane = laneForSpecialist(sourceAgent)
+    const sourceLane = laneForSourceAgent(sourceAgent)
     if (sourceLane && !lanes.includes(sourceLane.name)) throw new Error(`finding source agent ${sourceAgent} is outside the requested MMAR lanes`)
   }
 }
