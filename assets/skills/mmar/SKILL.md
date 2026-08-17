@@ -67,6 +67,10 @@ Present the orchestrator's review ID, round ID, runtime status, findings, ignore
 
 Ask the user any returned clarification questions. For a clarification round, reuse the same scope and orchestrator session.
 
+## Apply an explicit disposition
+
+When the user explicitly asks to dismiss or restore a finding, use `mmar_set_finding_disposition` with the finding ID from retrieval. Do not start a new review round for this user decision. Dismissals require a concise non-empty reason; restorations do not accept one. This tool only changes findings in the latest completed round and is unavailable while that review has an active lock.
+
 If the orchestrator reports an active lock, show the review ID and acquisition time. Do not start another review or bypass the lock.
 
 If orchestration fails after a review begins, report the review and round IDs. Inspect the lock and ask the user before running:
@@ -95,4 +99,3 @@ opencode-multireview export <review-id> [--round <round-id>] [--output <path>]
 ```
 
 SQLite history and plugin tools are the canonical persistence layer. 
-

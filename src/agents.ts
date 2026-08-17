@@ -26,6 +26,7 @@ const COORDINATOR_TOOLS = {
   mmar_complete: true,
   mmar_list_reviews: true,
   mmar_get_findings: true,
+  mmar_set_finding_disposition: true,
 } as const
 
 const REVIEWER_PERMISSION = {
@@ -41,6 +42,7 @@ const REVIEWER_TOOLS = {
   mmar_complete: false,
   mmar_list_reviews: false,
   mmar_get_findings: true,
+  mmar_set_finding_disposition: false,
 } as const
 
 export function buildAgents(config: MultireviewPluginConfig): Record<string, AgentDefinition> {

@@ -59,7 +59,7 @@ test("registers agents without removing existing config", async () => {
   assert.equal(cfg.agent.existing_agent.model, "keep-me");
   assert.equal(cfg.agent.mmar_orchestrator.model, "user-model");
   assert.equal(cfg.agent.mmar_orchestrator.permission.bash, "allow");
-  assert.deepEqual(cfg.agent.mmar_orchestrator.tools, { mmar_begin: true, mmar_complete: true, mmar_list_reviews: true, mmar_get_findings: true });
+  assert.deepEqual(cfg.agent.mmar_orchestrator.tools, { mmar_begin: true, mmar_complete: true, mmar_list_reviews: true, mmar_get_findings: true, mmar_set_finding_disposition: true });
   assert.equal(cfg.agent.mmar_correctness.model, "github-copilot/gpt-5.6-sol");
 });
 
@@ -103,12 +103,13 @@ test("keeps write tools exclusive while enabling read tools for every bundled sp
     bash: "allow",
     edit: "deny",
   });
-  assert.deepEqual(cfg.agent.mmar_orchestrator.tools, { mmar_begin: true, mmar_complete: true, mmar_list_reviews: true, mmar_get_findings: true });
+  assert.deepEqual(cfg.agent.mmar_orchestrator.tools, { mmar_begin: true, mmar_complete: true, mmar_list_reviews: true, mmar_get_findings: true, mmar_set_finding_disposition: true });
   for (const name of ["mmar_correctness", "mmar_codestyle", "mmar_testing", "mmar_intent"]) {
     assert.equal(cfg.agent[name].tools.mmar_begin, false);
     assert.equal(cfg.agent[name].tools.mmar_complete, false);
     assert.equal(cfg.agent[name].tools.mmar_list_reviews, false);
     assert.equal(cfg.agent[name].tools.mmar_get_findings, true);
+    assert.equal(cfg.agent[name].tools.mmar_set_finding_disposition, false);
   }
 });
 
@@ -213,9 +214,9 @@ test("does not allow existing config to escalate bundled security controls", asy
 
   assert.equal(cfg.agent.mmar_correctness.permission.bash, "allow");
   assert.equal(cfg.agent.mmar_correctness.permission.edit, "deny");
-  assert.deepEqual(cfg.agent.mmar_correctness.tools, { mmar_begin: false, mmar_complete: false, mmar_list_reviews: false, mmar_get_findings: true });
+  assert.deepEqual(cfg.agent.mmar_correctness.tools, { mmar_begin: false, mmar_complete: false, mmar_list_reviews: false, mmar_get_findings: true, mmar_set_finding_disposition: false });
   assert.equal(cfg.agent.mmar_orchestrator.permission.bash, "allow");
-  assert.deepEqual(cfg.agent.mmar_orchestrator.tools, { mmar_begin: true, mmar_complete: true, mmar_list_reviews: true, mmar_get_findings: true });
+  assert.deepEqual(cfg.agent.mmar_orchestrator.tools, { mmar_begin: true, mmar_complete: true, mmar_list_reviews: true, mmar_get_findings: true, mmar_set_finding_disposition: true });
 });
 
 test("registers plugin hooks, guards specialist tasks, and logs event diagnostics", async () => {

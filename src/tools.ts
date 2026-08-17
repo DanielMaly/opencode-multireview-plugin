@@ -78,6 +78,12 @@ const getFindingsArgsSchema = z.object({
   worktreePath: z.string().trim().min(1).optional(),
 }).strict()
 
+const setFindingDispositionArgsSchema = z.object({
+  findingId: z.number().int().positive(),
+  disposition: z.enum(findingDispositions),
+  reason: z.string().optional(),
+}).strict()
+
 function contextWorktree(context: ToolContext): string {
   validateToolContext(context)
   const directory = context.directory.trim()
@@ -100,6 +106,14 @@ function validateToolContext(context: ToolContext): void {
 function trustedWriteRepository(context: ToolContext): string {
   if (context.agent !== "mmar_orchestrator") throw new Error("MMAR write tools are available only to mmar_orchestrator")
   return contextWorktree(context)
+}
+
+const canonicalSpecialists = new Set(["mmar_codestyle", "mmar_correctness", "mmar_testing", "mmar_intent"])
+
+function trustedDispositionRepository(context: ToolContext): RepositoryIdentity {
+  validateToolContext(context)
+  if (canonicalSpecialists.has(context.agent)) throw new Error("MMAR finding disposition is unavailable to canonical specialists")
+  return resolveRepositoryIdentity(contextWorktree(context))
 }
 
 function readRepository(context: ToolContext, worktreePath: string | undefined): RepositoryIdentity {
@@ -202,11 +216,23 @@ export function createMmarTools(databaseOptions: DatabaseOptions = {}): Record<s
     },
   })
 
+  const setFindingDisposition = tool({
+    description: "Set the effective disposition of a latest-round MMAR finding after an explicit user request. This does not start a review round.",
+    args: setFindingDispositionArgsSchema.shape,
+    async execute(args, context) {
+      const input = setFindingDispositionArgsSchema.parse(args)
+      const repository = trustedDispositionRepository(context)
+      const result = (await getStore()).setFindingDisposition({ ...input, scope: repository })
+      return json(result)
+    },
+  })
+
   return {
     mmar_begin: begin,
     mmar_complete: complete,
     mmar_list_reviews: listReviews,
     mmar_get_findings: getFindings,
+    mmar_set_finding_disposition: setFindingDisposition,
   }
 }
 

@@ -1,6 +1,6 @@
 # opencode-multireview-plugin
 
-Local-first MMAR (multi-model adversarial review) tooling for OpenCode. The plugin provides five renamed agents, durable SQLite review history, fenced locks, deterministic export, and the caller-facing `mmar` skill.
+Local-first MMAR (multi-model adversarial review) tooling for OpenCode. The plugin provides five renamed agents, durable SQLite review history, fenced locks, deterministic export, effective finding dispositions, and the caller-facing `mmar` skill.
 
 ## Install
 
@@ -44,7 +44,7 @@ References to third-party `@multireview` packages or integrations remain outside
 
 The `mmar` skill is the review entrypoint. It normalizes a target (pull request, branch, commit, uncommitted worktree, or custom changeset), requires and resolves a base ref, and then delegates compact scope metadata to `mmar_orchestrator`.
 
-For historical discovery or findings retrieval, any agent with a valid context and session may call the read-only `mmar_list_reviews` and `mmar_get_findings` tools directly; delegation to `mmar_orchestrator` is unnecessary. Omit `worktreePath` to preserve the current session-worktree behavior. When the requested worktree differs from the OpenCode session root, pass its exact absolute Git worktree root to either read tool. This intentionally widens model-facing read access to persisted findings for known local Git worktrees, including siblings and paths outside the session root; explicit non-Git paths are unsupported. Uncommitted reviews remain limited to the exact selected worktree. Listing includes lock acquisition metadata but never fencing tokens, and these read tools do not grant database-path selection, SQL, writes, lock ownership, or fencing credentials. `mmar_begin` and `mmar_complete` remain runtime-exclusive to `mmar_orchestrator` and are explicitly denied in bundled specialist configuration; they do not accept `worktreePath`. The CLI remains the human-facing Markdown/history interface.
+For historical discovery or findings retrieval, any agent with a valid context and session may call the read-only `mmar_list_reviews` and `mmar_get_findings` tools directly; delegation to `mmar_orchestrator` is unnecessary. Omit `worktreePath` to preserve the current session-worktree behavior. When the requested worktree differs from the OpenCode session root, pass its exact absolute Git worktree root to either read tool. This intentionally widens model-facing read access to persisted findings for known local Git worktrees, including siblings and paths outside the session root; explicit non-Git paths are unsupported. Uncommitted reviews remain limited to the exact selected worktree. Listing includes lock acquisition metadata but never fencing tokens, and these read tools do not grant database-path selection, SQL, writes, lock ownership, or fencing credentials. `mmar_begin` and `mmar_complete` remain runtime-exclusive to `mmar_orchestrator` and are explicitly denied in bundled specialist configuration; they do not accept `worktreePath`. `mmar_set_finding_disposition` uses the trusted current worktree, accepts only finding ID, disposition, and optional reason, and is denied to canonical specialists by configuration and runtime. The CLI remains the human-facing Markdown/history interface.
 
 An optional Jira key/URL is resolved through the caller's authenticated Jira integration. An explicit local intent path is read exactly as supplied. Successful content is passed to the intent agent, but only the normalized reference is persisted. Failed resolution passes the reference and concise error, still launches `mmar_intent`, and produces intent uncertainty; it never invents content or silently becomes a no-intent review.
 
@@ -66,7 +66,7 @@ opencode-multireview export <review-id> [--round <round-id>] [--output <path>]
 opencode-multireview unlock <review-id> [--force]
 ```
 
-Exports are deterministic and can select the latest or any immutable historical round. `--output` writes atomically.
+Exports are deterministic and can select the latest or any immutable historical round. `--output` writes atomically. Finding IDs are exposed by structured retrieval. The model disposition tool targets only the latest completed round and rejects active review locks.
 
 ## Storage and configuration
 
@@ -76,7 +76,7 @@ The database is created on first use and migrated with packaged, checksummed for
 - Windows: `%LOCALAPPDATA%/opencode-multireview/reviews.sqlite`
 - Linux/other: `$XDG_DATA_HOME/opencode-multireview/reviews.sqlite`, or `~/.local/share/opencode-multireview/reviews.sqlite`
 
-The database stores review identity, immutable structured rounds, findings, uncertainties, and lock metadata. It does not store fetched Jira/local source content, full diffs, transcripts, or Markdown files.
+The database stores review identity, immutable structured rounds, findings, current disposition overrides, uncertainties, and lock metadata. Finding rows, their `contentHash`, and round `payloadHash` remain hashes of the original completion snapshot. Effective reads group findings by the current disposition and expose original disposition metadata when an override exists; prior ignored candidates use that effective state. It does not store fetched Jira/local source content, full diffs, transcripts, or Markdown files.
 
 Model defaults and profiles remain configurable in `~/.config/opencode/multireview-plugin.json`; plugin tuple options can override `configPath` and model selections. The reviewer keys are `coordinator`, `correctness`, `codestyle`, `testing`, and `intent`.
 
