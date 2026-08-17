@@ -1,5 +1,5 @@
 import type { DatabaseOptions } from "./database.js"
-import { begin, complete } from "./reviewWrites.js"
+import { begin, complete, setFindingDisposition } from "./reviewWrites.js"
 import {
   assertReviewScope,
   getRound,
@@ -27,6 +27,8 @@ import type {
   ReviewScope,
   ReviewSummary,
   ScopedReviewSummary,
+  SetFindingDispositionRequest,
+  SetFindingDispositionResult,
 } from "../review.js"
 
 export type {
@@ -40,6 +42,8 @@ export type {
   ReviewScope,
   ReviewSummary,
   ScopedReviewSummary,
+  SetFindingDispositionRequest,
+  SetFindingDispositionResult,
 } from "../review.js"
 
 export class ReviewStore {
@@ -51,6 +55,10 @@ export class ReviewStore {
 
   complete(request: CompleteReviewRequest): { roundId: string; idempotent: boolean } {
     return complete(this.options, request)
+  }
+
+  setFindingDisposition(request: SetFindingDispositionRequest): SetFindingDispositionResult {
+    return setFindingDisposition(this.options, request)
   }
 
   assertReviewScope(reviewId: string, scope: ReviewScope): void {
