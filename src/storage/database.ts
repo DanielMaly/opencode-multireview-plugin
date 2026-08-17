@@ -103,3 +103,15 @@ export function withDatabase<T>(options: DatabaseOptions, operation: (database: 
     database.close()
   }
 }
+
+export function immediateTransaction<T>(database: SqliteDatabase, operation: () => T): T {
+  database.exec("BEGIN IMMEDIATE")
+  try {
+    const result = operation()
+    database.exec("COMMIT")
+    return result
+  } catch (error) {
+    try { database.exec("ROLLBACK") } catch { /* retain original error */ }
+    throw error
+  }
+}
