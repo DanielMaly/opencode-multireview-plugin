@@ -4,6 +4,9 @@ import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import type { SqliteDatabase } from "./database.js"
 
+const SELECT_APPLIED_MIGRATIONS_SQL = "SELECT version, name, checksum FROM schema_migrations ORDER BY version"
+const INSERT_SCHEMA_MIGRATION_SQL = "INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (?, ?, ?, ?)"
+
 interface Migration {
   version: number
   name: string
@@ -46,7 +49,7 @@ function discoverMigrations(directory = migrationDirectory()): Migration[] {
 export function applyMigrations(database: SqliteDatabase, directory?: string): void {
   const migrations = discoverMigrations(directory)
   database.exec("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, checksum TEXT NOT NULL, applied_at TEXT NOT NULL)")
-  const applied = database.prepare("SELECT version, name, checksum FROM schema_migrations ORDER BY version").all() as Array<{
+  const applied = database.prepare(SELECT_APPLIED_MIGRATIONS_SQL).all() as Array<{
     version: number
     name: string
     checksum: string
@@ -63,7 +66,7 @@ export function applyMigrations(database: SqliteDatabase, directory?: string): v
     try {
       database.exec("BEGIN IMMEDIATE")
       database.exec(migration.sql)
-      database.prepare("INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (?, ?, ?, ?)").run(
+      database.prepare(INSERT_SCHEMA_MIGRATION_SQL).run(
         migration.version,
         migration.name,
         migration.checksum,
