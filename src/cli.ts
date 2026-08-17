@@ -114,6 +114,44 @@ async function unlockCommand(reviewId: string, options: { force?: boolean }): Pr
   process.stdout.write(deleted ? `Unlocked review ${reviewId}.\n` : `Lock for review ${reviewId} was replaced; no lock was removed.\n`)
 }
 
+function findingId(value: string): number {
+  if (!/^\d+$/.test(value)) throw new Error("finding-id must be a positive safe integer")
+  const id = Number(value)
+  if (!Number.isSafeInteger(id) || id < 1) throw new Error("finding-id must be a positive safe integer")
+  return id
+}
+
+async function promptReason(findingID: number): Promise<string> {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    throw new Error("dismiss requires a reason argument when stdin or stdout is non-interactive")
+  }
+  const readline = createInterface({ input: process.stdin, output: process.stdout })
+  try {
+    return await new Promise<string>((resolveAnswer) => readline.question(`Reason for dismissing finding ${findingID}: `, resolveAnswer))
+  } finally {
+    readline.close()
+  }
+}
+
+function dispositionConfirmation(result: { findingId: number; reviewId: string; roundId: string; disposition: string; idempotent: boolean }): void {
+  const status = result.idempotent
+    ? `already in effective disposition ${result.disposition}; idempotent no-op`
+    : `effective disposition set to ${result.disposition}`
+  process.stdout.write(`Finding ${result.findingId} in review ${result.reviewId}, round ${result.roundId}: ${status}.\n`)
+}
+
+async function dismissCommand(rawFindingID: string, suppliedReason?: string): Promise<void> {
+  const id = findingId(rawFindingID)
+  const reason = suppliedReason === undefined ? await promptReason(id) : suppliedReason
+  const result = store().setFindingDisposition({ findingId: id, disposition: "ignored", reason })
+  dispositionConfirmation(result)
+}
+
+function restoreCommand(rawFindingID: string): void {
+  const result = store().setFindingDisposition({ findingId: findingId(rawFindingID), disposition: "valid" })
+  dispositionConfirmation(result)
+}
+
 function skillInstallCommand(options: { global?: boolean; project?: boolean }): void {
   const mode: InstallMode | undefined = options.global ? "global" : options.project ? "project" : undefined
   if (!mode) throw new Error("exactly one of --global or --project is required")
@@ -146,6 +184,16 @@ function commandLine(): Command {
     .description("Release a review lock")
     .option("--force", "release the lock without confirmation")
     .action(unlockCommand)
+
+  program
+    .command("dismiss <finding-id> [reason]")
+    .description("Dismiss a latest-round finding with a reason")
+    .action(dismissCommand)
+
+  program
+    .command("restore <finding-id>")
+    .description("Restore a latest-round finding")
+    .action(restoreCommand)
 
   const skill = program
     .command("skill")
