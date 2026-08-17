@@ -220,7 +220,7 @@ export function createMmarTools(databaseOptions: DatabaseOptions = {}): Record<s
   })
 
   const setFindingDisposition = tool({
-    description: "After an explicit user request, set a finding disposition without starting a review round. Available to any normal agent or mmar_orchestrator with valid context/session in the trusted current worktree; canonical specialists are denied. `ignored` requires a non-empty reason. `valid` forbids a reason.",
+    description: "Set a finding disposition after an explicit user request without starting a review round. Normal agents and mmar_orchestrator may use this tool with a valid context and session. The tool uses the trusted current worktree. Canonical specialists cannot use it. Set `ignored` with a non-empty reason. Set `valid` without a reason.",
     args: setFindingDispositionArgsSchema.shape,
     async execute(args, context) {
       const input = setFindingDispositionArgsSchema.parse(args)
