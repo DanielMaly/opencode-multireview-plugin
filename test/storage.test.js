@@ -538,7 +538,7 @@ test("projects reversible effective dispositions without changing original rows 
   }
 });
 
-test("preserves original ignored metadata in historical projections and rejects stale mutation", () => {
+test("preserves original ignored metadata in historical projections", () => {
   const { directory, databasePath } = temporaryPath();
   try {
     const store = new ReviewStore({ databasePath });
@@ -563,7 +563,6 @@ test("preserves original ignored metadata in historical projections and rejects 
     assert.equal(historicalOriginalIgnored.wontfix, "Reconsidered trade-off");
     assert.equal(historicalOriginalIgnored.dispositionOverridden, true);
     assert.equal(historicalOriginalIgnored.originalDisposition, "ignored");
-    assert.throws(() => store.setFindingDisposition({ findingId: originalIgnored.id, disposition: "valid" }), /latest completed round/);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -598,6 +597,7 @@ test("validates finding disposition requests", () => {
     assert.throws(() => store.setFindingDisposition({ findingId: finding.id, disposition: "ignored", reason: "   " }), /non-empty reason/);
     assert.throws(() => store.setFindingDisposition({ findingId: finding.id, disposition: "valid", reason: "not allowed" }), /cannot include reason/);
     assert.throws(() => store.setFindingDisposition({ findingId: 999999, disposition: "valid" }), /unknown finding/);
+    assert.throws(() => store.setFindingDisposition({ findingId: 999999, disposition: "valid", scope: { projectKey: identity().projectKey, worktreePath: identity().worktreePath } }), /finding is outside the trusted project scope/);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -622,15 +622,16 @@ test("enforces active locks and freshness", () => {
   }
 });
 
-test("enforces project scope before other disposition guards and preserves overrides", () => {
+test("enforces project scope before freshness and preserves overrides", () => {
   const { directory, databasePath } = temporaryPath();
   try {
     const store = new ReviewStore({ databasePath });
     const review = store.begin({ identity: identity(), target: target("scoped-project") });
-    completeStore(store, { reviewId: review.reviewId, roundId: review.roundId, fencingToken: review.fencingToken, validFindings: [validFinding("Scoped") ] });
+    completeStore(store, { reviewId: review.reviewId, roundId: review.roundId, fencingToken: review.fencingToken, validFindings: [validFinding("Scoped")] });
     const finding = store.getRound(review.reviewId).validFindings[0];
     store.setFindingDisposition({ findingId: finding.id, disposition: "ignored", reason: "Keep existing" });
     const next = store.begin({ identity: identity(), target: target("scoped-project"), lanes: ["correctness"] });
+    completeStore(store, { reviewId: next.reviewId, roundId: next.roundId, fencingToken: next.fencingToken, laneResults: [{ lane: "correctness", status: "completed" }] });
     assert.throws(() => store.setFindingDisposition({
       findingId: finding.id,
       disposition: "valid",
@@ -639,7 +640,6 @@ test("enforces project scope before other disposition guards and preserves overr
     const database = openDatabase({ databasePath });
     assert.deepEqual({ ...database.prepare("SELECT disposition, reason FROM finding_disposition_overrides WHERE finding_id = ?").get(finding.id) }, { disposition: "ignored", reason: "Keep existing" });
     database.close();
-    assert.equal(store.unlock(next.reviewId, next.fencingToken), true);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -650,7 +650,7 @@ test("enforces uncommitted worktree scope and preserves overrides", () => {
   try {
     const store = new ReviewStore({ databasePath });
     const review = store.begin({ identity: identity(), target: target("/project/worktree", "uncommitted") });
-    completeStore(store, { reviewId: review.reviewId, roundId: review.roundId, fencingToken: review.fencingToken, validFindings: [validFinding("Uncommitted") ] });
+    completeStore(store, { reviewId: review.reviewId, roundId: review.roundId, fencingToken: review.fencingToken, validFindings: [validFinding("Uncommitted")] });
     const finding = store.getRound(review.reviewId).validFindings[0];
     store.setFindingDisposition({ findingId: finding.id, disposition: "ignored", reason: "Keep worktree override" });
     assert.throws(() => store.setFindingDisposition({

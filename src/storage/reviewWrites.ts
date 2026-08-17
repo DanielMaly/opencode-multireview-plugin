@@ -320,7 +320,10 @@ export function setFindingDisposition(options: DatabaseOptions, request: SetFind
         LEFT JOIN finding_disposition_overrides o ON o.finding_id = f.id
         WHERE f.id = ?
       `).get(request.findingId) as DispositionRow | undefined
-      if (!row) throw new Error(`unknown finding ${request.findingId}`)
+      if (!row) {
+        if (request.scope) throw new Error("finding is outside the trusted project scope")
+        throw new Error(`unknown finding ${request.findingId}`)
+      }
       if (request.scope) validateDispositionScope(row, request.scope)
       if (Number(row.round_ordinal) !== Number(row.latest_round_ordinal)) throw new Error("finding is not in the latest completed round")
       if (database.prepare("SELECT 1 AS active FROM review_locks WHERE review_id = ?").get(row.review_id)) throw new Error("finding review has an active lock")
