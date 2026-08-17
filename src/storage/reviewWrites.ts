@@ -322,25 +322,31 @@ type DispositionResultOptions = {
 export function setFindingDisposition(options: DatabaseOptions, request: SetFindingDispositionRequest): SetFindingDispositionResult {
   return withDatabase(options, (database) => {
     database.exec("BEGIN IMMEDIATE")
+
     try {
       validateFindingId(request.findingId)
       const row = database.prepare(FINDING_DISPOSITION_LOOKUP_SQL).get(request.findingId) as DispositionRow | undefined
+
       if (!row) {
         if (request.scope) throw new Error("finding is outside the trusted project scope")
         throw new Error(`unknown finding ${request.findingId}`)
       }
+
       if (request.scope) validateDispositionScope(row, request.scope)
       if (Number(row.round_ordinal) !== Number(row.latest_round_ordinal)) throw new Error("finding is not in the latest completed round")
       if (database.prepare(ACTIVE_REVIEW_LOCK_SQL).get(row.review_id)) throw new Error("finding review has an active lock")
+
       const reason = validateDispositionRequest(request.disposition, request.reason)
       const originalMatches = dispositionMatches(row.original_disposition, row.original_wontfix, request.disposition, reason)
       const currentDisposition = row.current_disposition ?? row.original_disposition
       const currentReason = row.current_disposition === null ? row.original_wontfix : row.current_reason
       const currentMatches = dispositionMatches(currentDisposition, currentReason, request.disposition, reason)
+
       if (currentMatches) {
         database.exec("COMMIT")
         return dispositionResult(row, request.disposition, reason, { overridden: row.current_disposition !== null, idempotent: true })
       }
+
       if (originalMatches) {
         database.prepare(DELETE_FINDING_DISPOSITION_OVERRIDE_SQL).run(request.findingId)
       } else {
@@ -351,6 +357,7 @@ export function setFindingDisposition(options: DatabaseOptions, request: SetFind
           now(),
         )
       }
+
       database.exec("COMMIT")
       return dispositionResult(row, request.disposition, reason, { overridden: !originalMatches, idempotent: false })
     } catch (error) {
