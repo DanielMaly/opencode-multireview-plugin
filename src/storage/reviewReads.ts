@@ -14,6 +14,10 @@ import type {
 import { LEGACY_SESSION_ID } from "../review.js"
 import { findingCategoriesForLanes } from "../lanes.js"
 
+const FINDING_OVERRIDE_TABLE_CHECK_QUERY = "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'finding_disposition_overrides'"
+const FINDING_QUERY_WITH_OVERRIDES = "SELECT f.id, f.disposition, f.severity, f.category, f.title, f.body_markdown, f.wontfix, f.source_agents_json, f.content_hash, o.disposition AS override_disposition, o.reason AS override_reason FROM findings f LEFT JOIN finding_disposition_overrides o ON o.finding_id = f.id WHERE "
+const FINDING_QUERY_WITHOUT_OVERRIDES = "SELECT f.id, f.disposition, f.severity, f.category, f.title, f.body_markdown, f.wontfix, f.source_agents_json, f.content_hash, NULL AS override_disposition, NULL AS override_reason FROM findings f WHERE "
+
 type FindingRow = {
   id: number
   disposition: "valid" | "ignored"
@@ -252,8 +256,7 @@ function readRound(database: SqliteDatabase, row: RoundRow): ReviewRound {
 }
 
 function findingQuery(database: SqliteDatabase, condition: string): string {
-  const overrideTable = database.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'finding_disposition_overrides'").get() !== undefined
-  const overrideColumns = overrideTable ? ", o.disposition AS override_disposition, o.reason AS override_reason" : ", NULL AS override_disposition, NULL AS override_reason"
-  const join = overrideTable ? " LEFT JOIN finding_disposition_overrides o ON o.finding_id = f.id" : ""
-  return `SELECT f.id, f.disposition, f.severity, f.category, f.title, f.body_markdown, f.wontfix, f.source_agents_json, f.content_hash${overrideColumns} FROM findings f${join} WHERE ${condition} ORDER BY f.ordinal`
+  const overrideTable = database.prepare(FINDING_OVERRIDE_TABLE_CHECK_QUERY).get() !== undefined
+  const query = overrideTable ? FINDING_QUERY_WITH_OVERRIDES : FINDING_QUERY_WITHOUT_OVERRIDES
+  return `${query}${condition} ORDER BY f.ordinal`
 }

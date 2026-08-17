@@ -13,6 +13,36 @@ import { activeLaneSnapshot, resolveMarkers } from "./reviewLifecycle.js"
 import { laneByName, normalizeLanes, validateFindingOwnership } from "../lanes.js"
 import type { LaneResult } from "../review.js"
 
+const FINDING_DISPOSITION_LOOKUP_SQL = `
+  SELECT
+    f.id AS finding_id,
+    f.round_id,
+    rr.review_id,
+    rr.ordinal AS round_ordinal,
+    (
+      SELECT MAX(latest.ordinal)
+      FROM review_rounds latest
+      WHERE latest.review_id = rr.review_id
+    ) AS latest_round_ordinal,
+    r.target_kind,
+    p.project_key,
+    w.path AS worktree_path,
+    f.disposition AS original_disposition,
+    f.wontfix AS original_wontfix,
+    o.disposition AS current_disposition,
+    o.reason AS current_reason
+  FROM findings f
+  JOIN review_rounds rr ON rr.id = f.round_id
+  JOIN reviews r ON r.id = rr.review_id
+  JOIN projects p ON p.id = r.project_id
+  JOIN worktrees w ON w.id = r.worktree_id
+  LEFT JOIN finding_disposition_overrides o ON o.finding_id = f.id
+  WHERE f.id = ?
+`
+const ACTIVE_REVIEW_LOCK_SQL = "SELECT 1 AS active FROM review_locks WHERE review_id = ?"
+const DELETE_FINDING_DISPOSITION_OVERRIDE_SQL = "DELETE FROM finding_disposition_overrides WHERE finding_id = ?"
+const UPSERT_FINDING_DISPOSITION_OVERRIDE_SQL = "INSERT INTO finding_disposition_overrides (finding_id, disposition, reason, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(finding_id) DO UPDATE SET disposition = excluded.disposition, reason = excluded.reason, updated_at = excluded.updated_at"
+
 function now(): string {
   return new Date().toISOString()
 }
@@ -294,39 +324,14 @@ export function setFindingDisposition(options: DatabaseOptions, request: SetFind
     database.exec("BEGIN IMMEDIATE")
     try {
       validateFindingId(request.findingId)
-      const row = database.prepare(`
-        SELECT
-          f.id AS finding_id,
-          f.round_id,
-          rr.review_id,
-          rr.ordinal AS round_ordinal,
-          (
-            SELECT MAX(latest.ordinal)
-            FROM review_rounds latest
-            WHERE latest.review_id = rr.review_id
-          ) AS latest_round_ordinal,
-          r.target_kind,
-          p.project_key,
-          w.path AS worktree_path,
-          f.disposition AS original_disposition,
-          f.wontfix AS original_wontfix,
-          o.disposition AS current_disposition,
-          o.reason AS current_reason
-        FROM findings f
-        JOIN review_rounds rr ON rr.id = f.round_id
-        JOIN reviews r ON r.id = rr.review_id
-        JOIN projects p ON p.id = r.project_id
-        JOIN worktrees w ON w.id = r.worktree_id
-        LEFT JOIN finding_disposition_overrides o ON o.finding_id = f.id
-        WHERE f.id = ?
-      `).get(request.findingId) as DispositionRow | undefined
+      const row = database.prepare(FINDING_DISPOSITION_LOOKUP_SQL).get(request.findingId) as DispositionRow | undefined
       if (!row) {
         if (request.scope) throw new Error("finding is outside the trusted project scope")
         throw new Error(`unknown finding ${request.findingId}`)
       }
       if (request.scope) validateDispositionScope(row, request.scope)
       if (Number(row.round_ordinal) !== Number(row.latest_round_ordinal)) throw new Error("finding is not in the latest completed round")
-      if (database.prepare("SELECT 1 AS active FROM review_locks WHERE review_id = ?").get(row.review_id)) throw new Error("finding review has an active lock")
+      if (database.prepare(ACTIVE_REVIEW_LOCK_SQL).get(row.review_id)) throw new Error("finding review has an active lock")
       const reason = validateDispositionRequest(request.disposition, request.reason)
       const originalMatches = dispositionMatches(row.original_disposition, row.original_wontfix, request.disposition, reason)
       const currentDisposition = row.current_disposition ?? row.original_disposition
@@ -337,9 +342,9 @@ export function setFindingDisposition(options: DatabaseOptions, request: SetFind
         return dispositionResult(row, request.disposition, reason, { overridden: row.current_disposition !== null, idempotent: true })
       }
       if (originalMatches) {
-        database.prepare("DELETE FROM finding_disposition_overrides WHERE finding_id = ?").run(request.findingId)
+        database.prepare(DELETE_FINDING_DISPOSITION_OVERRIDE_SQL).run(request.findingId)
       } else {
-        database.prepare("INSERT INTO finding_disposition_overrides (finding_id, disposition, reason, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(finding_id) DO UPDATE SET disposition = excluded.disposition, reason = excluded.reason, updated_at = excluded.updated_at").run(
+        database.prepare(UPSERT_FINDING_DISPOSITION_OVERRIDE_SQL).run(
           request.findingId,
           request.disposition,
           reason,
