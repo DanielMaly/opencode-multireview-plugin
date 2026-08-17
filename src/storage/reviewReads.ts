@@ -1,7 +1,8 @@
 import type { DatabaseOptions, SqliteDatabase } from "./database.js"
 import { withDatabase } from "./database.js"
-import type { NormalizedFinding } from "../findings.js"
+import type { FindingDisposition, NormalizedFinding } from "../findings.js"
 import type {
+  FindingSnapshot,
   IgnoredSnapshot,
   IntentType,
   LockInfo,
@@ -13,6 +14,10 @@ import type {
 import { LEGACY_SESSION_ID } from "../review.js"
 import { findingCategoriesForLanes } from "../lanes.js"
 
+const FINDING_OVERRIDE_TABLE_CHECK_QUERY = "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'finding_disposition_overrides'"
+const FINDING_QUERY_WITH_OVERRIDES = "SELECT f.id, f.disposition, f.severity, f.category, f.title, f.body_markdown, f.wontfix, f.source_agents_json, f.content_hash, o.disposition AS override_disposition, o.reason AS override_reason FROM findings f LEFT JOIN finding_disposition_overrides o ON o.finding_id = f.id WHERE "
+const FINDING_QUERY_WITHOUT_OVERRIDES = "SELECT f.id, f.disposition, f.severity, f.category, f.title, f.body_markdown, f.wontfix, f.source_agents_json, f.content_hash, NULL AS override_disposition, NULL AS override_reason FROM findings f WHERE "
+
 type FindingRow = {
   id: number
   disposition: "valid" | "ignored"
@@ -23,6 +28,8 @@ type FindingRow = {
   wontfix: string | null
   source_agents_json: string
   content_hash: string
+  override_disposition: FindingDisposition | null
+  override_reason: string | null
 }
 
 type SummaryRow = {
@@ -56,14 +63,37 @@ type LaneRow = {
   failure_reason: string | null
 }
 
-function rowFinding(row: FindingRow): NormalizedFinding {
+type EffectiveFindingState = {
+  disposition: FindingDisposition
+  wontfix?: string
+  dispositionOverridden?: true
+  originalDisposition?: FindingDisposition
+  originalWontfix?: string
+}
+
+function effectiveFindingState(row: FindingRow): EffectiveFindingState {
+  const disposition = row.override_disposition ?? row.disposition
+  const state: EffectiveFindingState = { disposition }
+  if (disposition === "ignored") {
+    const wontfix = row.override_reason ?? row.wontfix ?? undefined
+    if (wontfix !== undefined) state.wontfix = wontfix
+  }
+  if (row.override_disposition !== null) {
+    state.dispositionOverridden = true
+    state.originalDisposition = row.disposition
+    if (row.wontfix !== null) state.originalWontfix = row.wontfix
+  }
+  return state
+}
+
+function rowFinding(row: FindingRow): FindingSnapshot {
   return {
-    disposition: row.disposition,
+    id: Number(row.id),
+    ...effectiveFindingState(row),
     severity: row.severity,
     category: row.category,
     title: row.title,
     bodyMarkdown: row.body_markdown,
-    ...(row.wontfix === null ? {} : { wontfix: row.wontfix }),
     sourceAgents: JSON.parse(row.source_agents_json) as string[],
     blockedByUncertaintyIds: [],
     contentHash: row.content_hash,
@@ -103,9 +133,12 @@ function summaryRows(database: SqliteDatabase, scope: { projectKey?: string; wor
 }
 
 export function previousIgnored(database: SqliteDatabase, reviewId: string, lanes?: string[]): IgnoredSnapshot[] {
-  const rows = database.prepare("SELECT id, disposition, severity, category, title, body_markdown, wontfix, source_agents_json, content_hash FROM findings WHERE round_id = (SELECT id FROM review_rounds WHERE review_id = ? ORDER BY ordinal DESC LIMIT 1) AND disposition = 'ignored' ORDER BY ordinal").all(reviewId) as FindingRow[]
+  const rows = database.prepare(findingQuery(database, "f.round_id = (SELECT id FROM review_rounds WHERE review_id = ? ORDER BY ordinal DESC LIMIT 1)"))
+    .all(reviewId) as FindingRow[]
   const categories = lanes === undefined ? undefined : new Set(findingCategoriesForLanes(lanes))
-  return rows.filter((row) => categories === undefined || categories.has(row.category)).map((row) => ({ id: Number(row.id), ...rowFinding(row) }))
+  return rows.filter((row) => effectiveFindingState(row).disposition === "ignored")
+    .filter((row) => categories === undefined || categories.has(row.category))
+    .map((row) => rowFinding(row))
 }
 
 export function assertReviewScope(options: DatabaseOptions, reviewId: string, scope: ReviewScope): void {
@@ -171,7 +204,7 @@ export function inspectLock(options: DatabaseOptions, reviewId: string): LockInf
 }
 
 function readRound(database: SqliteDatabase, row: RoundRow): ReviewRound {
-  const findings = database.prepare("SELECT id, disposition, severity, category, title, body_markdown, wontfix, source_agents_json, content_hash FROM findings WHERE round_id = ? ORDER BY disposition, ordinal").all(row.id) as FindingRow[]
+  const findings = database.prepare(findingQuery(database, "f.round_id = ?")).all(row.id) as FindingRow[]
   const uncertainties = database.prepare("SELECT id, ordinal, title, observed_evidence, missing_context, clarification_question FROM intent_uncertainties WHERE round_id = ? ORDER BY ordinal").all(row.id) as Array<{
     id: number
     ordinal: number
@@ -191,7 +224,6 @@ function readRound(database: SqliteDatabase, row: RoundRow): ReviewRound {
   const mappedFindings = findings.map((finding) => ({
     ...rowFinding(finding),
     blockedByUncertaintyIds: blockedByFinding.get(Number(finding.id)) ?? [],
-    ...(finding.disposition === "ignored" ? { id: Number(finding.id) } : {}),
   }))
   const laneTable = database.prepare("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'review_round_lanes'").get()
   const lanes = laneTable === undefined
@@ -212,8 +244,8 @@ function readRound(database: SqliteDatabase, row: RoundRow): ReviewRound {
       })),
     }),
     completedAt: row.completed_at,
-    validFindings: mappedFindings.filter((finding): finding is NormalizedFinding => finding.disposition === "valid"),
-    ignoredFindings: mappedFindings.filter((finding): finding is IgnoredSnapshot => finding.disposition === "ignored"),
+    validFindings: mappedFindings.filter((finding) => finding.disposition === "valid"),
+    ignoredFindings: mappedFindings.filter((finding) => finding.disposition === "ignored"),
     uncertainties: uncertainties.map((uncertainty) => ({
       title: uncertainty.title,
       observedEvidence: uncertainty.observed_evidence,
@@ -221,4 +253,10 @@ function readRound(database: SqliteDatabase, row: RoundRow): ReviewRound {
       clarificationQuestion: uncertainty.clarification_question,
     })),
   }
+}
+
+function findingQuery(database: SqliteDatabase, condition: string): string {
+  const overrideTable = database.prepare(FINDING_OVERRIDE_TABLE_CHECK_QUERY).get() !== undefined
+  const query = overrideTable ? FINDING_QUERY_WITH_OVERRIDES : FINDING_QUERY_WITHOUT_OVERRIDES
+  return `${query}${condition} ORDER BY f.ordinal`
 }

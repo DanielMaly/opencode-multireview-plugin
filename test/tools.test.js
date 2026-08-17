@@ -243,6 +243,7 @@ test("retrieves the complete structured review round through the tool layer", as
     assert.match(round.completedAt, /^\d{4}-\d{2}-\d{2}T/);
     assert.deepEqual(round.intent, { type: "jira", ref: "MMAR-42" });
     assert.deepEqual(round.validFindings, [{
+      id: round.validFindings[0].id,
       disposition: "valid",
       severity: "CRITICAL",
       category: "CORRECTNESS",
@@ -252,6 +253,7 @@ test("retrieves the complete structured review round through the tool layer", as
       blockedByUncertaintyIds: ["1"],
       contentHash: round.validFindings[0].contentHash,
     }]);
+    assert.equal(Number.isInteger(round.validFindings[0].id), true);
     assert.match(round.validFindings[0].contentHash, /^[0-9a-f]{64}$/);
     assert.deepEqual(round.ignoredFindings[0], {
       id: round.ignoredFindings[0].id,
