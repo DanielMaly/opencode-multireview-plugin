@@ -6,7 +6,7 @@ import { basename, dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { Command, CommanderError, Option } from "commander"
 import { ReviewStore } from "./storage/reviews.js"
-import type { ReviewSummary } from "./review.js"
+import type { ReviewSummary, SetFindingDispositionResult } from "./review.js"
 import { resolveRepositoryIdentity } from "./repository.js"
 import { serializeReviewMarkdown } from "./markdown.js"
 import { installSkill, type InstallMode } from "./installer.js"
@@ -114,41 +114,56 @@ async function unlockCommand(reviewId: string, options: { force?: boolean }): Pr
   process.stdout.write(deleted ? `Unlocked review ${reviewId}.\n` : `Lock for review ${reviewId} was replaced; no lock was removed.\n`)
 }
 
-function findingId(value: string): number {
+function parseFindingId(value: string): number {
   if (!/^\d+$/.test(value)) throw new Error("finding-id must be a positive safe integer")
   const id = Number(value)
   if (!Number.isSafeInteger(id) || id < 1) throw new Error("finding-id must be a positive safe integer")
   return id
 }
 
-async function promptReason(findingID: number): Promise<string> {
+async function promptReason(findingId: number): Promise<string> {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     throw new Error("dismiss requires a reason argument when stdin or stdout is non-interactive")
   }
   const readline = createInterface({ input: process.stdin, output: process.stdout })
   try {
-    return await new Promise<string>((resolveAnswer) => readline.question(`Reason for dismissing finding ${findingID}: `, resolveAnswer))
+    return await new Promise<string>((resolveAnswer, rejectAnswer) => {
+      let settled = false
+      const abort = () => {
+        if (settled) return
+        settled = true
+        rejectAnswer(new Error("dismiss prompt aborted; provide a reason argument"))
+      }
+      readline.once("close", abort)
+      readline.once("SIGINT", abort)
+      readline.question(`Reason for dismissing finding ${findingId}: `, (answer) => {
+        if (settled) return
+        settled = true
+        resolveAnswer(answer)
+      })
+    })
   } finally {
     readline.close()
   }
 }
 
-function dispositionConfirmation(result: { findingId: number; reviewId: string; roundId: string; disposition: string; idempotent: boolean }): void {
+function dispositionConfirmation(result: SetFindingDispositionResult): void {
   const status = result.idempotent
     ? `already in effective disposition ${result.disposition}; idempotent no-op`
     : `effective disposition set to ${result.disposition}`
   process.stdout.write(`Finding ${result.findingId} in review ${result.reviewId}, round ${result.roundId}: ${status}.\n`)
 }
 
-async function dismissCommand(rawFindingID: string, suppliedReason?: string): Promise<void> {
-  const id = findingId(rawFindingID)
-  const reason = suppliedReason === undefined ? await promptReason(id) : suppliedReason
-  const result = store().setFindingDisposition({ findingId: id, disposition: "ignored", reason })
+async function dismissCommand(rawFindingId: string, suppliedReason?: string): Promise<void> {
+  const findingId = parseFindingId(rawFindingId)
+  const reason = suppliedReason === undefined ? await promptReason(findingId) : suppliedReason
+  const result = store().setFindingDisposition({ findingId, disposition: "ignored", reason })
   dispositionConfirmation(result)
 }
 
-function restoreCommand(rawFindingID: string): void {
-  const result = store().setFindingDisposition({ findingId: findingId(rawFindingID), disposition: "valid" })
+function restoreCommand(rawFindingId: string): void {
+  const findingId = parseFindingId(rawFindingId)
+  const result = store().setFindingDisposition({ findingId, disposition: "valid" })
   dispositionConfirmation(result)
 }
 

@@ -52,29 +52,7 @@ test("CLI uses Commander help and rejects invalid invocations", () => {
   }
 })
 
-function interactiveUnlock(reviewId, env) {
-  const python = [
-    "import os, pty, sys",
-    "buffer = bytearray()",
-    "confirmed = False",
-    "def read(fd):",
-    "    global confirmed",
-    "    data = os.read(fd, 1024)",
-    "    buffer.extend(data)",
-    "    if not confirmed and b'[y/N]' in buffer:",
-    "        confirmed = True",
-    "        os.write(fd, b'y\\r')",
-    "    return data",
-    "sys.exit(pty.spawn(sys.argv[1:], read))",
-  ].join("\n")
-  return spawnSync("python3", ["-c", python, process.execPath, cli.pathname, "unlock", reviewId], {
-    env,
-    encoding: "utf8",
-    timeout: 10_000,
-  })
-}
-
-function interactiveDismiss(findingID, env, reason = "Interactive reason") {
+function interactivePty(args, env, promptMarker, response, suffix = "\r") {
   const python = [
     "import os, pty, sys",
     "buffer = bytearray()",
@@ -83,17 +61,30 @@ function interactiveDismiss(findingID, env, reason = "Interactive reason") {
     "    global answered",
     "    data = os.read(fd, 1024)",
     "    buffer.extend(data)",
-    "    if not answered and b'Reason for dismissing' in buffer:",
+    "    if not answered and sys.argv[1].encode() in buffer:",
     "        answered = True",
-    "        os.write(fd, sys.argv[-1].encode() + b'\\r')",
+    "        os.write(fd, sys.argv[2].encode() + sys.argv[3].encode())",
     "    return data",
-    "sys.exit(pty.spawn(sys.argv[1:-1], read))",
+    "status = pty.spawn(sys.argv[4:], read)",
+    "sys.exit(os.waitstatus_to_exitcode(status))",
   ].join("\n")
-  return spawnSync("python3", ["-c", python, process.execPath, cli.pathname, "dismiss", String(findingID), reason], {
+  return spawnSync("python3", ["-c", python, promptMarker, response, suffix, process.execPath, cli.pathname, ...args], {
     env,
     encoding: "utf8",
     timeout: 10_000,
   })
+}
+
+function interactiveUnlock(reviewId, env) {
+  return interactivePty(["unlock", reviewId], env, "[y/N]", "y")
+}
+
+function interactiveDismiss(findingId, env, reason = "Interactive reason") {
+  return interactivePty(["dismiss", String(findingId)], env, "Reason for dismissing", reason)
+}
+
+function interactiveDismissAbort(findingId, env) {
+  return interactivePty(["dismiss", String(findingId)], env, "Reason for dismissing", "\x04", "")
 }
 
 function interactiveUnlockRace(context, reviewId) {
@@ -435,6 +426,11 @@ test("dismiss and restore update effective exports and reject missing noninterac
     assert.equal(restored.status, 0, `${restored.stdout}\n${restored.stderr}`)
     assert.match(restored.stdout, new RegExp(`Finding ${finding.id}.*effective disposition set to valid`))
     assert.equal(context.store().getRound(review.reviewId).validFindings.find((item) => item.id === finding.id).disposition, "valid")
+    const restoredExport = run(["export", review.reviewId], context.env).stdout
+    const validSection = restoredExport.split("## Valid Findings\n\n")[1].split("\n\n## Intent Uncertainties")[0]
+    const ignoredSection = restoredExport.split("## Ignored Findings\n\n")[1]
+    assert.match(validSection, /\*\*\[CRITICAL\] \[CORRECTNESS\] Critical\*\*/)
+    assert.doesNotMatch(ignoredSection, /Critical|Accepted for/)
 
     const repeatedRestore = run(["restore", String(finding.id)], context.env)
     assert.equal(repeatedRestore.status, 0)
@@ -452,6 +448,21 @@ test("dismiss prompts for a reason on a TTY", () => {
     const result = interactiveDismiss(finding.id, context.env)
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`)
     assert.equal(context.store().getRound(review.reviewId).ignoredFindings.find((item) => item.id === finding.id).wontfix, "Interactive reason")
+  } finally {
+    rmSync(context.directory, { recursive: true, force: true })
+  }
+})
+
+test("dismiss prompt abort rejects without mutating the finding", () => {
+  const context = fixture()
+  try {
+    const review = completeReview(context)
+    const finding = context.store().getRound(review.reviewId).validFindings[0]
+    const result = interactiveDismissAbort(finding.id, context.env)
+    assert.notEqual(result.status, 0, `${result.stdout}\n${result.stderr}`)
+    assert.match(`${result.stdout}\n${result.stderr}`, /dismiss prompt aborted; provide a reason argument/)
+    assert.equal(context.store().getRound(review.reviewId).validFindings.some((item) => item.id === finding.id), true)
+    assert.equal(context.store().getRound(review.reviewId).ignoredFindings.some((item) => item.id === finding.id), false)
   } finally {
     rmSync(context.directory, { recursive: true, force: true })
   }
@@ -479,6 +490,20 @@ test("dismiss rejects a whitespace-only positional reason", () => {
     assert.notEqual(result.status, 0)
     assert.match(result.stderr, /ignored disposition requires a non-empty reason/)
     assert.equal(context.store().getRound(review.reviewId).validFindings.some((item) => item.id === finding.id), true)
+  } finally {
+    rmSync(context.directory, { recursive: true, force: true })
+  }
+})
+
+test("dismiss accepts a dash-prefixed reason after the option delimiter", () => {
+  const context = fixture()
+  try {
+    const review = completeReview(context)
+    const finding = context.store().getRound(review.reviewId).validFindings[0]
+    const result = run(["dismiss", String(finding.id), "--", "-duplicate finding"], context.env)
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`)
+    const dismissed = context.store().getRound(review.reviewId).ignoredFindings.find((item) => item.id === finding.id)
+    assert.equal(dismissed.wontfix, "-duplicate finding")
   } finally {
     rmSync(context.directory, { recursive: true, force: true })
   }

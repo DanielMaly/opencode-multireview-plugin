@@ -68,7 +68,7 @@ opencode-multireview dismiss <finding-id> [reason]
 opencode-multireview restore <finding-id>
 ```
 
-`dismiss` stores a non-empty reason; supplied reasons are normalized by storage. If the reason is omitted, the CLI prompts only when both stdin and stdout are TTYs. Otherwise, provide the positional reason. `restore` removes an effective dismissal. Both commands address a finding globally by ID, and storage permits changes only for the latest completed round when no active review lock exists; lock and stale-round errors are preserved.
+`dismiss` stores a non-empty reason; supplied reasons are normalized by storage. If the reason is omitted, the CLI prompts only when both stdin and stdout are TTYs. Otherwise, provide the positional reason. For a reason beginning with `-`, separate positional arguments with `--`, for example `opencode-multireview dismiss 42 -- -duplicate`. `restore` removes an effective dismissal. Both commands address a finding globally by ID, and storage permits changes only for the latest completed round when no active review lock exists; lock and stale-round errors are preserved.
 
 Exports are deterministic and can select the latest effective round or any immutable historical round. `--output` writes atomically. Finding IDs are exposed by structured retrieval. Disposition changes affect effective exports without changing the original finding content hashes or round payload hashes, so exact historical exports retain their original snapshots and metadata.
 
