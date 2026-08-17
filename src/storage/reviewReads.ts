@@ -1,7 +1,8 @@
 import type { DatabaseOptions, SqliteDatabase } from "./database.js"
 import { withDatabase } from "./database.js"
-import type { NormalizedFinding } from "../findings.js"
+import type { FindingDisposition, NormalizedFinding } from "../findings.js"
 import type {
+  FindingSnapshot,
   IgnoredSnapshot,
   IntentType,
   LockInfo,
@@ -16,15 +17,16 @@ import { findingCategoriesForLanes } from "../lanes.js"
 const SUMMARY_ROWS_QUERY = "SELECT r.id, r.target_kind, r.target_key, r.target_label, r.base_ref, r.base_commit, r.current_intent_type, r.current_intent_ref, rr.id AS latest_round_id, rr.completed_at AS latest_round_at, rl.fencing_token, rl.acquired_at FROM reviews r JOIN projects p ON p.id = r.project_id JOIN worktrees w ON w.id = r.worktree_id LEFT JOIN review_rounds rr ON rr.review_id = r.id AND rr.ordinal = (SELECT MAX(ordinal) FROM review_rounds WHERE review_id = r.id) LEFT JOIN review_locks rl ON rl.review_id = r.id WHERE (? IS NULL OR p.project_key = ?) AND (? IS NULL OR r.target_kind != 'uncommitted' OR w.path = ?) AND (? IS NULL OR r.id = ?) ORDER BY r.project_id, r.target_kind, r.target_key, r.base_commit"
 const LATEST_ROUND_QUERY = "SELECT id, review_id, ordinal, payload_hash, intent_type, intent_ref, completed_at FROM review_rounds WHERE review_id = ? ORDER BY ordinal DESC LIMIT 1"
 const SPECIFIC_ROUND_QUERY = "SELECT id, review_id, ordinal, payload_hash, intent_type, intent_ref, completed_at FROM review_rounds WHERE review_id = ? AND id = ?"
-const PREVIOUS_IGNORED_QUERY = "SELECT id, disposition, severity, category, title, body_markdown, wontfix, source_agents_json, content_hash FROM findings WHERE round_id = (SELECT id FROM review_rounds WHERE review_id = ? ORDER BY ordinal DESC LIMIT 1) AND disposition = 'ignored' ORDER BY ordinal"
 const REVIEW_SCOPE_QUERY = "SELECT p.project_key, r.target_kind, w.path FROM reviews r JOIN projects p ON p.id = r.project_id JOIN worktrees w ON w.id = r.worktree_id WHERE r.id = ?"
 const LIST_ROUNDS_QUERY = "SELECT id, review_id, ordinal, payload_hash, intent_type, intent_ref, completed_at FROM review_rounds WHERE review_id = ? ORDER BY ordinal"
 const LOCK_QUERY = "SELECT review_id, fencing_token, acquired_at, session_id FROM review_locks WHERE review_id = ?"
-const ROUND_FINDINGS_QUERY = "SELECT id, disposition, severity, category, title, body_markdown, wontfix, source_agents_json, content_hash FROM findings WHERE round_id = ? ORDER BY disposition, ordinal"
 const ROUND_UNCERTAINTIES_QUERY = "SELECT id, ordinal, title, observed_evidence, missing_context, clarification_question FROM intent_uncertainties WHERE round_id = ? ORDER BY ordinal"
 const FINDING_BLOCKS_QUERY = "SELECT b.finding_id, b.uncertainty_id FROM finding_intent_blocks b JOIN intent_uncertainties u ON u.id = b.uncertainty_id WHERE u.round_id = ? ORDER BY b.finding_id, u.ordinal"
 const LANE_TABLE_QUERY = "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'review_round_lanes'"
 const ROUND_LANES_QUERY = "SELECT lane, status, failure_reason FROM review_round_lanes WHERE round_id = ? ORDER BY lane"
+const FINDING_OVERRIDE_TABLE_CHECK_QUERY = "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'finding_disposition_overrides'"
+const FINDING_QUERY_WITH_OVERRIDES = "SELECT f.id, f.disposition, f.severity, f.category, f.title, f.body_markdown, f.wontfix, f.source_agents_json, f.content_hash, o.disposition AS override_disposition, o.reason AS override_reason FROM findings f LEFT JOIN finding_disposition_overrides o ON o.finding_id = f.id WHERE "
+const FINDING_QUERY_WITHOUT_OVERRIDES = "SELECT f.id, f.disposition, f.severity, f.category, f.title, f.body_markdown, f.wontfix, f.source_agents_json, f.content_hash, NULL AS override_disposition, NULL AS override_reason FROM findings f WHERE "
 
 type FindingRow = {
   id: number
@@ -36,6 +38,8 @@ type FindingRow = {
   wontfix: string | null
   source_agents_json: string
   content_hash: string
+  override_disposition: FindingDisposition | null
+  override_reason: string | null
 }
 
 type SummaryRow = {
@@ -83,14 +87,37 @@ type FindingBlockRow = {
   uncertainty_id: number
 }
 
-function rowFinding(row: FindingRow): NormalizedFinding {
+type EffectiveFindingState = {
+  disposition: FindingDisposition
+  wontfix?: string
+  dispositionOverridden?: true
+  originalDisposition?: FindingDisposition
+  originalWontfix?: string
+}
+
+function effectiveFindingState(row: FindingRow): EffectiveFindingState {
+  const disposition = row.override_disposition ?? row.disposition
+  const state: EffectiveFindingState = { disposition }
+  if (disposition === "ignored") {
+    const wontfix = row.override_reason ?? row.wontfix ?? undefined
+    if (wontfix !== undefined) state.wontfix = wontfix
+  }
+  if (row.override_disposition !== null) {
+    state.dispositionOverridden = true
+    state.originalDisposition = row.disposition
+    if (row.wontfix !== null) state.originalWontfix = row.wontfix
+  }
+  return state
+}
+
+function rowFinding(row: FindingRow): FindingSnapshot {
   return {
-    disposition: row.disposition,
+    id: Number(row.id),
+    ...effectiveFindingState(row),
     severity: row.severity,
     category: row.category,
     title: row.title,
     bodyMarkdown: row.body_markdown,
-    ...(row.wontfix === null ? {} : { wontfix: row.wontfix }),
     sourceAgents: JSON.parse(row.source_agents_json) as string[],
     blockedByUncertaintyIds: [],
     contentHash: row.content_hash,
@@ -130,9 +157,12 @@ function summaryRows(database: SqliteDatabase, scope: { projectKey?: string; wor
 }
 
 export function previousIgnored(database: SqliteDatabase, reviewId: string, lanes?: string[]): IgnoredSnapshot[] {
-  const rows = database.prepare(PREVIOUS_IGNORED_QUERY).all(reviewId) as FindingRow[]
+  const rows = database.prepare(findingQuery(database, "f.round_id = (SELECT id FROM review_rounds WHERE review_id = ? ORDER BY ordinal DESC LIMIT 1)"))
+    .all(reviewId) as FindingRow[]
   const categories = lanes === undefined ? undefined : new Set(findingCategoriesForLanes(lanes))
-  return rows.filter((row) => categories === undefined || categories.has(row.category)).map((row) => ({ id: Number(row.id), ...rowFinding(row) }))
+  return rows.filter((row) => effectiveFindingState(row).disposition === "ignored")
+    .filter((row) => categories === undefined || categories.has(row.category))
+    .map((row) => rowFinding(row))
 }
 
 export function assertReviewScope(options: DatabaseOptions, reviewId: string, scope: ReviewScope): void {
@@ -246,21 +276,20 @@ function loadFindingBlockers(database: SqliteDatabase, roundId: string, uncertai
 }
 
 function loadRoundFindings(database: SqliteDatabase, roundId: string): FindingRow[] {
-  return database.prepare(ROUND_FINDINGS_QUERY).all(roundId) as FindingRow[]
+  return database.prepare(findingQuery(database, "f.round_id = ?")).all(roundId) as FindingRow[]
 }
 
 function mapRoundFindings(findings: FindingRow[], blockedByFinding: Map<number, string[]>): {
-  valid: NormalizedFinding[]
-  ignored: IgnoredSnapshot[]
+  valid: FindingSnapshot[]
+  ignored: FindingSnapshot[]
 } {
   const mappedFindings = findings.map((finding) => ({
     ...rowFinding(finding),
     blockedByUncertaintyIds: blockedByFinding.get(Number(finding.id)) ?? [],
-    ...(finding.disposition === "ignored" ? { id: Number(finding.id) } : {}),
   }))
   return {
-    valid: mappedFindings.filter((finding): finding is NormalizedFinding => finding.disposition === "valid"),
-    ignored: mappedFindings.filter((finding): finding is IgnoredSnapshot => finding.disposition === "ignored"),
+    valid: mappedFindings.filter((finding) => finding.disposition === "valid"),
+    ignored: mappedFindings.filter((finding) => finding.disposition === "ignored"),
   }
 }
 
@@ -269,4 +298,10 @@ function loadLaneMetadata(database: SqliteDatabase, roundId: string): LaneRow[] 
   return laneTable === undefined
     ? []
     : database.prepare(ROUND_LANES_QUERY).all(roundId) as LaneRow[]
+}
+
+function findingQuery(database: SqliteDatabase, condition: string): string {
+  const overrideTable = database.prepare(FINDING_OVERRIDE_TABLE_CHECK_QUERY).get() !== undefined
+  const query = overrideTable ? FINDING_QUERY_WITH_OVERRIDES : FINDING_QUERY_WITHOUT_OVERRIDES
+  return `${query}${condition} ORDER BY f.ordinal`
 }

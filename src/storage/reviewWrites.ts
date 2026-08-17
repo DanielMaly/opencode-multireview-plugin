@@ -7,11 +7,40 @@ import {
 } from "../findings.js"
 import type { NormalizedRoundPayload } from "../findings.js"
 import { newReviewId } from "../repository.js"
-import { intentValues, LEGACY_SESSION_ID, sessionValue, type BeginReviewRequest, type BeginReviewResult, type CompleteReviewRequest } from "../review.js"
+import { intentValues, LEGACY_SESSION_ID, sessionValue, type BeginReviewRequest, type BeginReviewResult, type CompleteReviewRequest, type SetFindingDispositionRequest, type SetFindingDispositionResult } from "../review.js"
+import type { FindingDisposition } from "../findings.js"
 import { previousIgnored } from "./reviewReads.js"
 import { activeLaneSnapshot, resolveMarkers } from "./reviewLifecycle.js"
 import { laneByName, normalizeLanes, validateFindingOwnership, type ReviewLane } from "../lanes.js"
 import type { LaneResult } from "../review.js"
+
+
+const FINDING_DISPOSITION_LOOKUP_SQL = `
+  SELECT
+    f.id AS finding_id,
+    f.round_id,
+    rr.review_id,
+    rr.ordinal AS round_ordinal,
+    (
+      SELECT MAX(latest.ordinal)
+      FROM review_rounds latest
+      WHERE latest.review_id = rr.review_id
+    ) AS latest_round_ordinal,
+    r.target_kind,
+    p.project_key,
+    w.path AS worktree_path,
+    f.disposition AS original_disposition,
+    f.wontfix AS original_wontfix,
+    o.disposition AS current_disposition,
+    o.reason AS current_reason
+  FROM findings f
+  JOIN review_rounds rr ON rr.id = f.round_id
+  JOIN reviews r ON r.id = rr.review_id
+  JOIN projects p ON p.id = r.project_id
+  JOIN worktrees w ON w.id = r.worktree_id
+  LEFT JOIN finding_disposition_overrides o ON o.finding_id = f.id
+  WHERE f.id = ?
+`
 
 const ACTIVE_LOCK_QUERY = "SELECT l.fencing_token, l.pending_round_id, l.session_id, r.current_intent_type, r.current_intent_ref, (SELECT COUNT(*) FROM review_round_lanes WHERE review_id = l.review_id) AS lane_count FROM review_locks l JOIN reviews r ON r.id = l.review_id WHERE l.review_id = ?"
 const PROJECT_QUERY = "SELECT id FROM projects WHERE project_key = ?"
@@ -57,6 +86,9 @@ type LaneRow = { lane: string; status: "completed" | "failed" | null; failure_re
 type ExpectedIntentRow = { intent_type: string | null; intent_ref: string | null }
 type LatestRoundRow = { ordinal: number }
 type CompleteResult = { roundId: string; idempotent: boolean }
+const ACTIVE_REVIEW_LOCK_SQL = "SELECT 1 AS active FROM review_locks WHERE review_id = ?"
+const DELETE_FINDING_DISPOSITION_OVERRIDE_SQL = "DELETE FROM finding_disposition_overrides WHERE finding_id = ?"
+const UPSERT_FINDING_DISPOSITION_OVERRIDE_SQL = "INSERT INTO finding_disposition_overrides (finding_id, disposition, reason, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(finding_id) DO UPDATE SET disposition = excluded.disposition, reason = excluded.reason, updated_at = excluded.updated_at"
 
 function now(): string {
   return new Date().toISOString()
@@ -354,6 +386,119 @@ function persistFindingBlocks(database: SqliteDatabase, findingId: number, uncer
     const numericId = Number(uncertaintyId)
     if (!Number.isInteger(numericId) || numericId < 1 || numericId > uncertaintyIds.length) throw new Error(`invalid uncertainty reference ${uncertaintyId}`)
     database.prepare(INSERT_FINDING_BLOCK_QUERY).run(findingId, uncertaintyIds[numericId - 1])
+  }
+}
+
+type DispositionRow = {
+  finding_id: number
+  round_id: string
+  review_id: string
+  round_ordinal: number
+  latest_round_ordinal: number
+  target_kind: string
+  project_key: string
+  worktree_path: string
+  original_disposition: FindingDisposition
+  original_wontfix: string | null
+  current_disposition: FindingDisposition | null
+  current_reason: string | null
+}
+
+type DispositionResultOptions = {
+  overridden: boolean
+  idempotent: boolean
+}
+
+export function setFindingDisposition(options: DatabaseOptions, request: SetFindingDispositionRequest): SetFindingDispositionResult {
+  return withDatabase(options, (database) => immediateTransaction(database, () => setFindingDispositionReview(database, request)))
+}
+
+function setFindingDispositionReview(database: SqliteDatabase, request: SetFindingDispositionRequest): SetFindingDispositionResult {
+  validateFindingId(request.findingId)
+  const row = database.prepare(FINDING_DISPOSITION_LOOKUP_SQL).get(request.findingId) as DispositionRow | undefined
+  if (!row) {
+    if (request.scope) throw new Error("finding is outside the trusted project scope")
+    throw new Error(`unknown finding ${request.findingId}`)
+  }
+
+  if (request.scope) validateDispositionScope(row, request.scope)
+  if (Number(row.round_ordinal) !== Number(row.latest_round_ordinal)) throw new Error("finding is not in the latest completed round")
+  if (database.prepare(ACTIVE_REVIEW_LOCK_SQL).get(row.review_id)) throw new Error("finding review has an active lock")
+
+  const reason = validateDispositionRequest(request.disposition, request.reason)
+  const originalMatches = dispositionMatches(row.original_disposition, row.original_wontfix, request.disposition, reason)
+  const currentDisposition = row.current_disposition ?? row.original_disposition
+  const currentReason = row.current_disposition === null ? row.original_wontfix : row.current_reason
+  const currentMatches = dispositionMatches(currentDisposition, currentReason, request.disposition, reason)
+  if (currentMatches) {
+    return dispositionResult(row, request.disposition, reason, { overridden: row.current_disposition !== null, idempotent: true })
+  }
+
+  persistDispositionOverride(database, request, reason, originalMatches)
+  return dispositionResult(row, request.disposition, reason, { overridden: !originalMatches, idempotent: false })
+}
+
+function persistDispositionOverride(
+  database: SqliteDatabase,
+  request: SetFindingDispositionRequest,
+  reason: string | null,
+  originalMatches: boolean,
+): void {
+  if (originalMatches) {
+    database.prepare(DELETE_FINDING_DISPOSITION_OVERRIDE_SQL).run(request.findingId)
+    return
+  }
+  database.prepare(UPSERT_FINDING_DISPOSITION_OVERRIDE_SQL).run(
+    request.findingId,
+    request.disposition,
+    reason,
+    now(),
+  )
+}
+
+function validateFindingId(value: number): void {
+  if (!Number.isSafeInteger(value) || value < 1) throw new Error("findingId must be a positive integer")
+}
+
+function validateDispositionRequest(disposition: FindingDisposition, rawReason: string | undefined): string | null {
+  if (disposition === "valid") {
+    if (rawReason !== undefined) throw new Error("valid disposition cannot include reason")
+    return null
+  }
+  if (typeof rawReason !== "string") throw new Error("ignored disposition requires a non-empty reason")
+  const reason = rawReason.replaceAll("\r\n", "\n").replaceAll("\r", "\n").trim()
+  if (!reason) throw new Error("ignored disposition requires a non-empty reason")
+  return reason
+}
+
+function dispositionMatches(
+  candidateDisposition: FindingDisposition,
+  candidateReason: string | null,
+  requestedDisposition: FindingDisposition,
+  requestedReason: string | null,
+): boolean {
+  if (candidateDisposition !== requestedDisposition) return false
+  return requestedDisposition === "valid" || candidateReason === requestedReason
+}
+
+function validateDispositionScope(row: DispositionRow, scope: NonNullable<SetFindingDispositionRequest["scope"]>): void {
+  if (row.project_key !== scope.projectKey) throw new Error("finding is outside the trusted project scope")
+  if (row.target_kind === "uncommitted" && row.worktree_path !== scope.worktreePath) {
+    throw new Error("uncommitted finding is outside the trusted worktree scope")
+  }
+}
+
+function dispositionResult(row: DispositionRow, disposition: FindingDisposition, reason: string | null, options: DispositionResultOptions): SetFindingDispositionResult {
+  return {
+    reviewId: row.review_id,
+    roundId: row.round_id,
+    findingId: Number(row.finding_id),
+    disposition,
+    ...(disposition === "ignored" ? { wontfix: reason as string } : {}),
+    originalDisposition: row.original_disposition,
+    ...(row.original_disposition === "ignored" && row.original_wontfix !== null ? { originalWontfix: row.original_wontfix } : {}),
+    overridden: options.overridden,
+    idempotent: options.idempotent,
   }
 }
 

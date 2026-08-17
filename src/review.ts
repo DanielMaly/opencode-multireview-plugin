@@ -1,4 +1,5 @@
 import type {
+  FindingDisposition,
   FindingInput,
   IntentUncertainty,
   NormalizedFinding,
@@ -30,9 +31,14 @@ export interface LaneResult {
   failureReason?: string
 }
 
-export interface IgnoredSnapshot extends NormalizedFinding {
+export interface FindingSnapshot extends NormalizedFinding {
   id: number
+  dispositionOverridden?: true
+  originalDisposition?: FindingDisposition
+  originalWontfix?: string
 }
+
+export type IgnoredSnapshot = FindingSnapshot
 
 export type BeginReviewResult = {
   reviewId: string
@@ -51,6 +57,25 @@ export type BeginReviewResult = {
 }
 
 export type ReviewScope = Pick<ResolvedReviewIdentity, "projectKey" | "worktreePath">
+
+export interface SetFindingDispositionRequest {
+  findingId: number
+  disposition: FindingDisposition
+  reason?: string
+  scope?: ReviewScope
+}
+
+export interface SetFindingDispositionResult {
+  reviewId: string
+  roundId: string
+  findingId: number
+  disposition: FindingDisposition
+  wontfix?: string
+  originalDisposition: FindingDisposition
+  originalWontfix?: string
+  overridden: boolean
+  idempotent: boolean
+}
 
 export interface CompleteReviewRequest {
   reviewId: string
@@ -112,8 +137,8 @@ export interface ReviewRound {
   lanes?: ReviewLane[]
   laneResults?: LaneResult[]
   completedAt: string
-  validFindings: NormalizedFinding[]
-  ignoredFindings: IgnoredSnapshot[]
+  validFindings: FindingSnapshot[]
+  ignoredFindings: FindingSnapshot[]
   uncertainties: IntentUncertainty[]
 }
 
