@@ -87,6 +87,10 @@ function interactiveDismissAbort(findingId, env) {
   return interactivePty(["dismiss", String(findingId)], env, "Reason for dismissing", "\x04", "")
 }
 
+function interactiveDismissInterrupt(findingId, env) {
+  return interactivePty(["dismiss", String(findingId)], env, "Reason for dismissing", "\x03", "")
+}
+
 function interactiveUnlockRace(context, reviewId) {
   const prompt = join(context.directory, "unlock-prompt.txt")
   const release = join(context.directory, "release-unlock.txt")
@@ -459,6 +463,21 @@ test("dismiss prompt abort rejects without mutating the finding", () => {
     const review = completeReview(context)
     const finding = context.store().getRound(review.reviewId).validFindings[0]
     const result = interactiveDismissAbort(finding.id, context.env)
+    assert.notEqual(result.status, 0, `${result.stdout}\n${result.stderr}`)
+    assert.match(`${result.stdout}\n${result.stderr}`, /dismiss prompt aborted; provide a reason argument/)
+    assert.equal(context.store().getRound(review.reviewId).validFindings.some((item) => item.id === finding.id), true)
+    assert.equal(context.store().getRound(review.reviewId).ignoredFindings.some((item) => item.id === finding.id), false)
+  } finally {
+    rmSync(context.directory, { recursive: true, force: true })
+  }
+})
+
+test("dismiss prompt interrupt rejects without mutating the finding", () => {
+  const context = fixture()
+  try {
+    const review = completeReview(context)
+    const finding = context.store().getRound(review.reviewId).validFindings[0]
+    const result = interactiveDismissInterrupt(finding.id, context.env)
     assert.notEqual(result.status, 0, `${result.stdout}\n${result.stderr}`)
     assert.match(`${result.stdout}\n${result.stderr}`, /dismiss prompt aborted; provide a reason argument/)
     assert.equal(context.store().getRound(review.reviewId).validFindings.some((item) => item.id === finding.id), true)
