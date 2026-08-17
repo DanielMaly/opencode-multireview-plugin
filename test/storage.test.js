@@ -72,14 +72,14 @@ test("migrates a fresh database and is repeatable with rollback journal and fore
   const { directory, databasePath } = temporaryPath();
   try {
     const first = openDatabase({ databasePath });
-    assert.equal(first.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 3);
+    assert.equal(first.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 4);
     assert.equal(first.prepare("SELECT session_id FROM review_locks").get(), undefined);
     assert.equal(first.prepare("SELECT name FROM sqlite_master WHERE name = 'review_lifecycle_markers'").get().name, "review_lifecycle_markers");
     assert.equal(first.prepare("PRAGMA foreign_keys").get().foreign_keys, 1);
     assert.equal(first.prepare("PRAGMA journal_mode").get().journal_mode, "delete");
     first.close();
     const second = openDatabase({ databasePath });
-    assert.equal(second.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 3);
+    assert.equal(second.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 4);
     second.close();
   } finally {
     rmSync(directory, { recursive: true, force: true });
@@ -378,6 +378,7 @@ test("roundtrips uncertainties, blockers, complete finding properties, and lates
     assert.equal(round.ordinal, 1);
     assert.deepEqual(round.uncertainties.map((item) => item.title), ["First", "Second"]);
     assert.deepEqual(round.validFindings[0], {
+      id: round.validFindings[0].id,
       disposition: "valid",
       severity: "CRITICAL",
       category: "INTENT",
@@ -475,6 +476,109 @@ test("deduplicates session-error markers and resolves them on same-session compl
       { event: "session.error", status: "resolved" },
     ]);
     database.close();
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("upgrades a version-3 database with the additive disposition table", () => {
+  const { directory, databasePath } = temporaryPath();
+  const migrationDirectory = join(directory, "v3-migrations");
+  mkdirSync(migrationDirectory);
+  for (const migration of ["001_initial.sql", "002_session_bound_lifecycle.sql", "003_review_lane_outcomes.sql"]) {
+    writeFileSync(join(migrationDirectory, migration), readFileSync(new URL(`../assets/migrations/${migration}`, import.meta.url)));
+  }
+  try {
+    const version3 = openDatabase({ databasePath, migrationDirectory });
+    assert.equal(version3.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 3);
+    version3.close();
+    const upgraded = openDatabase({ databasePath });
+    assert.equal(upgraded.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get().count, 4);
+    assert.equal(upgraded.prepare("SELECT name FROM sqlite_master WHERE name = 'finding_disposition_overrides'").get().name, "finding_disposition_overrides");
+    upgraded.close();
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("projects reversible effective dispositions without changing original rows or hashes", () => {
+  const { directory, databasePath } = temporaryPath();
+  try {
+    const store = new ReviewStore({ databasePath });
+    const review = store.begin({ identity: identity(), target: target("dispositions") });
+    completeStore(store, { reviewId: review.reviewId, roundId: review.roundId, fencingToken: review.fencingToken, validFindings: [validFinding("Mutable")], ignoredFindings: [ignoredFinding("Original ignored")] });
+    const beforeDatabase = openDatabase({ databasePath });
+    const beforeFindings = beforeDatabase.prepare("SELECT id, round_id, ordinal, disposition, severity, category, title, body_markdown, wontfix, source_agents_json, content_hash FROM findings ORDER BY id").all();
+    const beforeRound = beforeDatabase.prepare("SELECT id, payload_hash FROM review_rounds WHERE id = ?").get(review.roundId);
+    beforeDatabase.close();
+    const originalRound = store.getRound(review.reviewId, review.roundId);
+    const mutable = originalRound.validFindings[0];
+    const originalIgnored = originalRound.ignoredFindings[0];
+
+    const dismissed = store.setFindingDisposition({ findingId: mutable.id, disposition: "ignored", reason: "Accepted for now" });
+    assert.deepEqual(dismissed, { reviewId: review.reviewId, roundId: review.roundId, findingId: mutable.id, disposition: "ignored", wontfix: "Accepted for now", originalDisposition: "valid", overridden: true, idempotent: false });
+    const effective = store.getRound(review.reviewId, review.roundId);
+    assert.equal(effective.validFindings.some((finding) => finding.id === mutable.id), false);
+    assert.equal(effective.ignoredFindings.find((finding) => finding.id === mutable.id).wontfix, "Accepted for now");
+    assert.equal(effective.ignoredFindings.find((finding) => finding.id === mutable.id).originalDisposition, "valid");
+    assert.equal(store.setFindingDisposition({ findingId: mutable.id, disposition: "ignored", reason: "Accepted for now" }).idempotent, true);
+    const redismissed = store.setFindingDisposition({ findingId: mutable.id, disposition: "ignored", reason: "Reconsidered later" });
+    assert.deepEqual(redismissed, { reviewId: review.reviewId, roundId: review.roundId, findingId: mutable.id, disposition: "ignored", wontfix: "Reconsidered later", originalDisposition: "valid", overridden: true, idempotent: false });
+    const redismissedEffective = store.getRound(review.reviewId, review.roundId).ignoredFindings.find((finding) => finding.id === mutable.id);
+    assert.equal(redismissedEffective.wontfix, "Reconsidered later");
+    assert.equal(redismissedEffective.dispositionOverridden, true);
+    assert.equal(redismissedEffective.originalDisposition, "valid");
+    assert.equal(store.setFindingDisposition({ findingId: mutable.id, disposition: "valid" }).overridden, false);
+
+    const restoredOriginalIgnored = store.setFindingDisposition({ findingId: originalIgnored.id, disposition: "valid" });
+    assert.equal(restoredOriginalIgnored.overridden, true);
+    assert.equal(restoredOriginalIgnored.originalWontfix, "Accepted trade-off");
+    const redismissedOriginalIgnored = store.setFindingDisposition({ findingId: originalIgnored.id, disposition: "ignored", reason: "Reconsidered trade-off" });
+    assert.deepEqual(redismissedOriginalIgnored, { reviewId: review.reviewId, roundId: review.roundId, findingId: originalIgnored.id, disposition: "ignored", wontfix: "Reconsidered trade-off", originalDisposition: "ignored", originalWontfix: "Accepted trade-off", overridden: true, idempotent: false });
+    const redismissedOriginalEffective = store.getRound(review.reviewId, review.roundId).ignoredFindings.find((finding) => finding.id === originalIgnored.id);
+    assert.equal(redismissedOriginalEffective.wontfix, "Reconsidered trade-off");
+    assert.equal(redismissedOriginalEffective.dispositionOverridden, true);
+    assert.equal(redismissedOriginalEffective.originalDisposition, "ignored");
+    assert.equal(redismissedOriginalEffective.originalWontfix, "Accepted trade-off");
+
+    const next = store.begin({ identity: identity(), target: target("dispositions") });
+    completeStore(store, { reviewId: next.reviewId, roundId: next.roundId, fencingToken: next.fencingToken, validFindings: [validFinding("Newer")] });
+    const historical = store.getRound(review.reviewId, review.roundId);
+    const historicalOriginalIgnored = historical.ignoredFindings.find((finding) => finding.id === originalIgnored.id);
+    assert.equal(historicalOriginalIgnored.wontfix, "Reconsidered trade-off");
+    assert.equal(historicalOriginalIgnored.dispositionOverridden, true);
+    assert.equal(historicalOriginalIgnored.originalDisposition, "ignored");
+    assert.throws(() => store.setFindingDisposition({ findingId: originalIgnored.id, disposition: "valid" }), /latest completed round/);
+
+    const afterDatabase = openDatabase({ databasePath });
+    assert.deepEqual(afterDatabase.prepare("SELECT id, round_id, ordinal, disposition, severity, category, title, body_markdown, wontfix, source_agents_json, content_hash FROM findings WHERE round_id = ? ORDER BY id").all(review.roundId), beforeFindings);
+    assert.deepEqual(afterDatabase.prepare("SELECT id, payload_hash FROM review_rounds WHERE id = ?").get(review.roundId), beforeRound);
+    afterDatabase.close();
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("uses effective prior ignored candidates and enforces validation, locks, freshness, and rollback", () => {
+  const { directory, databasePath } = temporaryPath();
+  try {
+    const store = new ReviewStore({ databasePath });
+    const review = store.begin({ identity: identity(), target: target("guards") });
+    completeStore(store, { reviewId: review.reviewId, roundId: review.roundId, fencingToken: review.fencingToken, validFindings: [validFinding("Candidate")] });
+    const finding = store.getRound(review.reviewId).validFindings[0];
+    assert.throws(() => store.setFindingDisposition({ findingId: finding.id, disposition: "ignored", reason: "   " }), /non-empty reason/);
+    assert.throws(() => store.setFindingDisposition({ findingId: finding.id, disposition: "valid", reason: "not allowed" }), /cannot include reason/);
+    assert.throws(() => store.setFindingDisposition({ findingId: 999999, disposition: "valid" }), /unknown finding/);
+    store.setFindingDisposition({ findingId: finding.id, disposition: "ignored", reason: "Recheck" });
+    const next = store.begin({ identity: identity(), target: target("guards"), lanes: ["correctness"] });
+    assert.deepEqual(next.previousIgnored.map((item) => ({ id: item.id, disposition: item.disposition, wontfix: item.wontfix })), [{ id: finding.id, disposition: "ignored", wontfix: "Recheck" }]);
+    assert.throws(() => store.setFindingDisposition({ findingId: finding.id, disposition: "valid" }), /active lock/);
+    assert.equal(store.unlock(next.reviewId, next.fencingToken), true);
+    assert.equal(store.setFindingDisposition({ findingId: finding.id, disposition: "valid" }).overridden, false);
+    const afterRestore = store.begin({ identity: identity(), target: target("guards"), lanes: ["correctness"] });
+    assert.deepEqual(afterRestore.previousIgnored, []);
+    completeStore(store, { reviewId: afterRestore.reviewId, roundId: afterRestore.roundId, fencingToken: afterRestore.fencingToken, laneResults: [{ lane: "correctness", status: "completed" }] });
+    assert.throws(() => store.setFindingDisposition({ findingId: finding.id, disposition: "ignored", reason: "Stale" }), /latest completed round/);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

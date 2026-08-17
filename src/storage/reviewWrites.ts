@@ -6,7 +6,8 @@ import {
   normalizeRoundPayload,
 } from "../findings.js"
 import { newReviewId } from "../repository.js"
-import { intentValues, LEGACY_SESSION_ID, sessionValue, type BeginReviewRequest, type BeginReviewResult, type CompleteReviewRequest } from "../review.js"
+import { intentValues, LEGACY_SESSION_ID, sessionValue, type BeginReviewRequest, type BeginReviewResult, type CompleteReviewRequest, type SetFindingDispositionRequest, type SetFindingDispositionResult } from "../review.js"
+import type { FindingDisposition } from "../findings.js"
 import { previousIgnored } from "./reviewReads.js"
 import { activeLaneSnapshot, resolveMarkers } from "./reviewLifecycle.js"
 import { laneByName, normalizeLanes, validateFindingOwnership } from "../lanes.js"
@@ -266,6 +267,93 @@ export function complete(options: DatabaseOptions, request: CompleteReviewReques
       throw error
     }
   })
+}
+
+type DispositionRow = {
+  finding_id: number
+  round_id: string
+  review_id: string
+  round_ordinal: number
+  latest_round_ordinal: number
+  target_kind: string
+  project_key: string
+  worktree_path: string
+  original_disposition: FindingDisposition
+  original_wontfix: string | null
+  current_disposition: FindingDisposition | null
+  current_reason: string | null
+}
+
+export function setFindingDisposition(options: DatabaseOptions, request: SetFindingDispositionRequest): SetFindingDispositionResult {
+  return withDatabase(options, (database) => {
+    database.exec("BEGIN IMMEDIATE")
+    try {
+      validateFindingId(request.findingId)
+      const row = database.prepare("SELECT f.id AS finding_id, f.round_id, rr.review_id, rr.ordinal AS round_ordinal, (SELECT MAX(latest.ordinal) FROM review_rounds latest WHERE latest.review_id = rr.review_id) AS latest_round_ordinal, r.target_kind, p.project_key, w.path AS worktree_path, f.disposition AS original_disposition, f.wontfix AS original_wontfix, o.disposition AS current_disposition, o.reason AS current_reason FROM findings f JOIN review_rounds rr ON rr.id = f.round_id JOIN reviews r ON r.id = rr.review_id JOIN projects p ON p.id = r.project_id JOIN worktrees w ON w.id = r.worktree_id LEFT JOIN finding_disposition_overrides o ON o.finding_id = f.id WHERE f.id = ?").get(request.findingId) as DispositionRow | undefined
+      if (!row) throw new Error(`unknown finding ${request.findingId}`)
+      if (row.round_ordinal !== row.latest_round_ordinal) throw new Error("finding is not in the latest completed round")
+      if (database.prepare("SELECT 1 AS active FROM review_locks WHERE review_id = ?").get(row.review_id)) throw new Error("finding review has an active lock")
+      if (request.scope) validateDispositionScope(row, request.scope)
+      const reason = validateDispositionRequest(request.disposition, request.reason)
+      const originalMatches = row.original_disposition === request.disposition && (request.disposition === "valid" || row.original_wontfix === reason)
+      const currentDisposition = row.current_disposition ?? row.original_disposition
+      const currentReason = row.current_disposition === null ? row.original_wontfix : row.current_reason
+      const currentMatches = currentDisposition === request.disposition && (request.disposition === "valid" || currentReason === reason)
+      if (currentMatches) {
+        database.exec("COMMIT")
+        return dispositionResult(row, request.disposition, reason, row.current_disposition !== null, true)
+      }
+      if (originalMatches) {
+        database.prepare("DELETE FROM finding_disposition_overrides WHERE finding_id = ?").run(request.findingId)
+      } else {
+        database.prepare("INSERT INTO finding_disposition_overrides (finding_id, disposition, reason, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(finding_id) DO UPDATE SET disposition = excluded.disposition, reason = excluded.reason, updated_at = excluded.updated_at").run(
+          request.findingId,
+          request.disposition,
+          reason,
+          now(),
+        )
+      }
+      database.exec("COMMIT")
+      return dispositionResult(row, request.disposition, reason, !originalMatches, false)
+    } catch (error) {
+      try { database.exec("ROLLBACK") } catch { /* retain original error */ }
+      throw error
+    }
+  })
+}
+
+function validateFindingId(value: number): void {
+  if (!Number.isSafeInteger(value) || value < 1) throw new Error("findingId must be a positive integer")
+}
+
+function validateDispositionRequest(disposition: FindingDisposition, rawReason: string | undefined): string | null {
+  if (disposition === "valid") {
+    if (rawReason !== undefined) throw new Error("valid disposition cannot include reason")
+    return null
+  }
+  if (typeof rawReason !== "string" || rawReason.trim() === "") throw new Error("ignored disposition requires a non-empty reason")
+  return rawReason.trim()
+}
+
+function validateDispositionScope(row: DispositionRow, scope: NonNullable<SetFindingDispositionRequest["scope"]>): void {
+  if (row.project_key !== scope.projectKey) throw new Error("finding is outside the trusted project scope")
+  if (row.target_kind === "uncommitted" && row.worktree_path !== scope.worktreePath) {
+    throw new Error("uncommitted finding is outside the trusted worktree scope")
+  }
+}
+
+function dispositionResult(row: DispositionRow, disposition: FindingDisposition, reason: string | null, overridden: boolean, idempotent: boolean): SetFindingDispositionResult {
+  return {
+    reviewId: row.review_id,
+    roundId: row.round_id,
+    findingId: Number(row.finding_id),
+    disposition,
+    ...(disposition === "ignored" ? { wontfix: reason as string } : {}),
+    originalDisposition: row.original_disposition,
+    ...(row.original_disposition === "ignored" && row.original_wontfix !== null ? { originalWontfix: row.original_wontfix } : {}),
+    overridden,
+    idempotent,
+  }
 }
 
 function validateRequiredLaneIntent(
