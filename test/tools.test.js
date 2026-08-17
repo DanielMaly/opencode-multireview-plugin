@@ -5,9 +5,15 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
 import { createMmarTools, mmarTools } from "../dist/tools.js";
+import { laneRegistry } from "../dist/lanes.js";
 import { resolveRepositoryIdentity } from "../dist/repository.js";
 import { ReviewStore } from "../dist/storage/reviews.js";
 import { LEGACY_SESSION_ID } from "../dist/review.js";
+
+const specialistAgents = laneRegistry.map(({ specialistAgent }) => specialistAgent);
+function specialistAgentFor(lane) {
+  return laneRegistry.find(({ name }) => name === lane).specialistAgent;
+}
 
 function gitProject(prefix) {
   const directory = mkdtempSync(join(tmpdir(), prefix));
@@ -38,7 +44,7 @@ function validFinding(title = "Tool finding") {
     category: "CORRECTNESS",
     title,
     bodyMarkdown: "Evidence",
-    sourceAgents: ["mmar_correctness"],
+    sourceAgents: [specialistAgentFor("correctness")],
   };
 }
 
@@ -98,7 +104,7 @@ test("lists scoped reviews and retrieves latest or exact completed findings with
     const exact = parse(await tools.mmar_get_findings.execute({ reviewId: first.reviewId, roundId: first.roundId, worktreePath: projectA }, context(projectB)));
     assert.equal(exact.id, first.roundId);
     assert.equal(exact.validFindings[0].title, "First round");
-    for (const agent of ["custom_agent", "mmar_correctness", "mmar_codestyle", "mmar_testing", "mmar_intent"]) {
+    for (const agent of ["custom_agent", ...specialistAgents]) {
       assert.equal(parse(await tools.mmar_list_reviews.execute({}, context(projectA, agent))).some(({ id }) => id === first.reviewId), true);
       assert.equal(parse(await tools.mmar_list_reviews.execute({ worktreePath: projectA }, context(projectB, agent))).some(({ id }) => id === first.reviewId), true);
       assert.equal(parse(await tools.mmar_get_findings.execute({ reviewId: first.reviewId }, context(projectA, agent))).id, second.roundId);
@@ -157,7 +163,7 @@ test("allows explicit reads outside context containment and resolves symlinked a
     const round = parse(await tools.mmar_get_findings.execute({ reviewId: begun.reviewId, worktreePath: linked }, linkedContext));
     assert.equal(round.validFindings[0].title, "Linked worktree");
 
-    const specialistListing = parse(await tools.mmar_list_reviews.execute({ worktreePath: linked }, { ...linkedContext, agent: "mmar_testing" }));
+    const specialistListing = parse(await tools.mmar_list_reviews.execute({ worktreePath: linked }, { ...linkedContext, agent: specialistAgentFor("testing") }));
     assert.equal(specialistListing.some(({ id }) => id === begun.reviewId), true);
     await assert.rejects(
       () => tools.mmar_get_findings.execute({ reviewId: begun.reviewId, worktreePath: linked }, { ...linkedContext, sessionID: LEGACY_SESSION_ID }),
@@ -216,7 +222,7 @@ test("retrieves the complete structured review round through the tool layer", as
       validFindings: [{
         ...validFinding("Structured valid"),
         severity: "CRITICAL",
-        sourceAgents: ["mmar_testing", "mmar_correctness"],
+        sourceAgents: [specialistAgentFor("testing"), specialistAgentFor("correctness")],
         blockedByUncertaintyIds: ["1"],
       }],
       ignoredFindings: [{
@@ -226,7 +232,7 @@ test("retrieves the complete structured review round through the tool layer", as
         title: "Structured ignored",
         bodyMarkdown: "Ignored evidence",
         wontfix: "Accepted",
-        sourceAgents: ["mmar_intent"],
+        sourceAgents: [specialistAgentFor("intent")],
       }],
       uncertainties: [{
         title: "Structured uncertainty",
@@ -250,7 +256,7 @@ test("retrieves the complete structured review round through the tool layer", as
       category: "CORRECTNESS",
       title: "Structured valid",
       bodyMarkdown: "Evidence",
-      sourceAgents: ["mmar_correctness", "mmar_testing"],
+      sourceAgents: [specialistAgentFor("correctness"), specialistAgentFor("testing")],
       blockedByUncertaintyIds: ["1"],
     });
     assert.equal(Number.isInteger(validFindingId), true);
@@ -263,7 +269,7 @@ test("retrieves the complete structured review round through the tool layer", as
       title: "Structured ignored",
       bodyMarkdown: "Ignored evidence",
       wontfix: "Accepted",
-      sourceAgents: ["mmar_intent"],
+      sourceAgents: [specialistAgentFor("intent")],
       blockedByUncertaintyIds: [],
     });
     assert.equal(Number.isInteger(ignoredFindingId), true);
@@ -324,7 +330,7 @@ test("rejects invalid and out-of-scope retrievals with explicit completed-round 
     await assert.rejects(() => tools.mmar_list_reviews.execute({ worktreePath: file }, context(projectA)), /not a directory/);
     await assert.rejects(() => tools.mmar_get_findings.execute({ reviewId: pending.reviewId, worktreePath: nested }, context(projectA)), /MMAR worktreePath must be the Git worktree root: /);
     await assert.rejects(() => tools.mmar_list_reviews.execute({ worktreePath: outside }, context(projectA)), /MMAR worktreePath is not a Git repository or worktree: /);
-    for (const agent of ["custom_agent", "mmar_correctness", "mmar_codestyle", "mmar_testing", "mmar_intent"]) {
+    for (const agent of ["custom_agent", ...specialistAgents]) {
       for (const sessionID of [undefined, LEGACY_SESSION_ID]) {
         for (const execute of [
           () => tools.mmar_list_reviews.execute({ worktreePath: projectA }, { ...context(projectA, agent), sessionID }),
@@ -480,7 +486,7 @@ test("rejects malformed payloads and untrusted, empty, or out-of-worktree contex
     await assert.rejects(() => tools.mmar_begin.execute({ ...beginArgs(), worktreePath: directory }, context(directory)), /unrecognized|unknown|invalid/i);
     await assert.rejects(() => completeTool(tools, { reviewId: "not-an-id" }, context(directory)), /invalid|expected/i);
     await assert.rejects(() => completeTool(tools, { reviewId: "00000000-0000-0000-0000-000000000000", roundId: "00000000-0000-0000-0000-000000000000", fencingToken: "00000000-0000-0000-0000-000000000000", worktreePath: directory }, context(directory)), /unrecognized|unknown|invalid/i);
-    await assert.rejects(() => tools.mmar_begin.execute(beginArgs(), context(directory, "mmar_correctness")), /only to mmar_orchestrator/);
+    await assert.rejects(() => tools.mmar_begin.execute(beginArgs(), context(directory, specialistAgentFor("correctness"))), /only to mmar_orchestrator/);
     await assert.rejects(() => tools.mmar_begin.execute(beginArgs(), { agent: "mmar_orchestrator", directory: "", worktree: "", sessionID: "session-a" }), /directory and worktree/);
     await assert.rejects(() => tools.mmar_begin.execute(beginArgs(), { agent: "mmar_orchestrator", directory: outside, worktree: directory, sessionID: "session-a" }), /outside/);
     const nestedResult = parse(await tools.mmar_begin.execute(beginArgs(), { agent: "mmar_orchestrator", directory: nested, worktree: directory, sessionID: "session-a" }));
@@ -503,20 +509,66 @@ test("sets finding dispositions through allowed callers and rejects specialists 
     const finding = new ReviewStore({ databasePath }).getRound(begun.reviewId).validFindings[0];
     const callerResult = parse(await tools.mmar_set_finding_disposition.execute({ findingId: finding.id, disposition: "ignored", reason: "  User accepted\r\n" }, context(project, normalAgent)));
     assert.deepEqual(callerResult, { reviewId: begun.reviewId, roundId: begun.roundId, findingId: finding.id, disposition: "ignored", wontfix: "User accepted", originalDisposition: "valid", overridden: true, idempotent: false });
+
+    const ignoredRound = parse(await tools.mmar_get_findings.execute({ reviewId: begun.reviewId }, context(project, normalAgent)));
+    assert.equal(ignoredRound.validFindings.some(({ id }) => id === finding.id), false);
+    assert.deepEqual(ignoredRound.ignoredFindings.find(({ id }) => id === finding.id), {
+      id: finding.id,
+      disposition: "ignored",
+      wontfix: "User accepted",
+      dispositionOverridden: true,
+      originalDisposition: "valid",
+      severity: "HIGH",
+      category: "CORRECTNESS",
+      title: "Tool finding",
+      bodyMarkdown: "Evidence",
+      sourceAgents: [specialistAgentFor("correctness")],
+      blockedByUncertaintyIds: [],
+      contentHash: ignoredRound.ignoredFindings.find(({ id }) => id === finding.id).contentHash,
+    });
     assert.equal(parse(await tools.mmar_set_finding_disposition.execute({ findingId: finding.id, disposition: "ignored", reason: "User accepted" }, context(project))).idempotent, true);
     const orchestratorResult = parse(await tools.mmar_set_finding_disposition.execute({ findingId: finding.id, disposition: "valid" }, context(project, "mmar_orchestrator")));
     assert.equal(orchestratorResult.overridden, false);
 
-    for (const agent of ["mmar_codestyle", "mmar_correctness", "mmar_testing", "mmar_intent"]) {
+    for (const agent of specialistAgents) {
       await assert.rejects(() => tools.mmar_set_finding_disposition.execute({ findingId: finding.id, disposition: "ignored", reason: "blocked" }, context(project, agent)), /unavailable to canonical specialists/);
     }
-    for (const args of [
-      { findingId: 0, disposition: "valid" },
-      { findingId: finding.id, disposition: "ignored" },
-      { findingId: finding.id, disposition: "ignored", reason: "   " },
-      { findingId: finding.id, disposition: "valid", reason: "unexpected" },
-      { findingId: finding.id, disposition: "valid", extra: true },
-    ]) await assert.rejects(() => tools.mmar_set_finding_disposition.execute(args, context(project)), /invalid|positive|expected|reason|unrecognized|non-empty/i);
+    await assert.rejects(
+      () => tools.mmar_set_finding_disposition.execute({ findingId: 0, disposition: "valid" }, context(project, normalAgent)),
+      /positive integer|expected number to be >0/,
+    );
+    await assert.rejects(
+      () => tools.mmar_set_finding_disposition.execute({ findingId: finding.id, disposition: "ignored" }, context(project, normalAgent)),
+      /non-empty reason/,
+    );
+    await assert.rejects(
+      () => tools.mmar_set_finding_disposition.execute({ findingId: finding.id, disposition: "ignored", reason: "   " }, context(project, normalAgent)),
+      /non-empty reason/,
+    );
+    await assert.rejects(
+      () => tools.mmar_set_finding_disposition.execute({ findingId: finding.id, disposition: "valid", reason: "unexpected" }, context(project, normalAgent)),
+      /valid disposition cannot include reason/,
+    );
+    await assert.rejects(
+      () => tools.mmar_set_finding_disposition.execute({ findingId: finding.id, disposition: "unknown" }, context(project, normalAgent)),
+      /invalid|expected|enum/i,
+    );
+    await assert.rejects(
+      () => tools.mmar_set_finding_disposition.execute({ findingId: finding.id, disposition: "valid", extra: true }, context(project, normalAgent)),
+      /unrecognized|unknown|invalid/i,
+    );
+    await assert.rejects(
+      () => tools.mmar_set_finding_disposition.execute({ findingId: finding.id, disposition: "valid" }, { directory: project, worktree: project, sessionID: "session-a" }),
+      /agent identity/,
+    );
+    await assert.rejects(
+      () => tools.mmar_set_finding_disposition.execute({ findingId: finding.id, disposition: "valid" }, context(project, "")),
+      /agent identity/,
+    );
+    await assert.rejects(
+      () => tools.mmar_set_finding_disposition.execute({ findingId: finding.id, disposition: "valid" }, context(project, ` ${normalAgent}`)),
+      /agent identity/,
+    );
     await assert.rejects(() => tools.mmar_set_finding_disposition.execute({ findingId: 999999, disposition: "valid" }, context(project, normalAgent)), (error) => {
       assert.match(error.message, /outside the trusted project scope/);
       assert.equal(error.message.includes("999999"), false);

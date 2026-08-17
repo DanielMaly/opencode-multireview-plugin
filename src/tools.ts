@@ -5,7 +5,7 @@ import { canonicalPath, normalizeTarget, resolveExplicitGitWorktree, resolveRepo
 import { intentTypes, LEGACY_SESSION_ID } from "./review.js"
 import type { DatabaseOptions } from "./storage/database.js"
 import type { ReviewStore } from "./storage/reviews.js"
-import { normalizeLanes } from "./lanes.js"
+import { laneForCanonicalSpecialist, normalizeLanes } from "./lanes.js"
 
 const z = tool.schema
 
@@ -96,8 +96,10 @@ function contextWorktree(context: ToolContext): string {
 }
 
 function validateToolContext(context: ToolContext): void {
+  const agent = context.agent
   const directory = context.directory.trim()
   const worktree = context.worktree.trim()
+  if (typeof agent !== "string" || agent.length === 0 || agent.trim() !== agent) throw new Error("MMAR tool context must include an unpadded agent identity")
   if (!directory || !worktree) throw new Error("MMAR tool context must include directory and worktree")
   const sessionID = context.sessionID?.trim()
   if (!sessionID || sessionID === LEGACY_SESSION_ID) throw new Error("MMAR tool context must include a valid sessionID")
@@ -108,11 +110,9 @@ function trustedWriteRepository(context: ToolContext): string {
   return contextWorktree(context)
 }
 
-const canonicalSpecialists = new Set(["mmar_codestyle", "mmar_correctness", "mmar_testing", "mmar_intent"])
-
-function trustedDispositionRepository(context: ToolContext): RepositoryIdentity {
+function authorizeDispositionRepository(context: ToolContext): RepositoryIdentity {
   validateToolContext(context)
-  if (canonicalSpecialists.has(context.agent)) throw new Error("MMAR finding disposition is unavailable to canonical specialists")
+  if (laneForCanonicalSpecialist(context.agent)) throw new Error("MMAR finding disposition is unavailable to canonical specialists")
   return resolveRepositoryIdentity(contextWorktree(context))
 }
 
@@ -217,11 +217,11 @@ export function createMmarTools(databaseOptions: DatabaseOptions = {}): Record<s
   })
 
   const setFindingDisposition = tool({
-    description: "Set the effective disposition of a latest-round MMAR finding after an explicit user request. This does not start a review round.",
+    description: "For an explicit user request, any normal agent or mmar_orchestrator with valid context/session may set a finding disposition in the trusted current worktree without starting a review round; canonical specialists are denied. Ignored requires a non-empty reason; valid forbids reason.",
     args: setFindingDispositionArgsSchema.shape,
     async execute(args, context) {
       const input = setFindingDispositionArgsSchema.parse(args)
-      const repository = trustedDispositionRepository(context)
+      const repository = authorizeDispositionRepository(context)
       const result = (await getStore()).setFindingDisposition({ ...input, scope: repository })
       return json(result)
     },
