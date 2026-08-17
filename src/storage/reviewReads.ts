@@ -16,6 +16,15 @@ import { findingCategoriesForLanes } from "../lanes.js"
 const SUMMARY_ROWS_QUERY = "SELECT r.id, r.target_kind, r.target_key, r.target_label, r.base_ref, r.base_commit, r.current_intent_type, r.current_intent_ref, rr.id AS latest_round_id, rr.completed_at AS latest_round_at, rl.fencing_token, rl.acquired_at FROM reviews r JOIN projects p ON p.id = r.project_id JOIN worktrees w ON w.id = r.worktree_id LEFT JOIN review_rounds rr ON rr.review_id = r.id AND rr.ordinal = (SELECT MAX(ordinal) FROM review_rounds WHERE review_id = r.id) LEFT JOIN review_locks rl ON rl.review_id = r.id WHERE (? IS NULL OR p.project_key = ?) AND (? IS NULL OR r.target_kind != 'uncommitted' OR w.path = ?) AND (? IS NULL OR r.id = ?) ORDER BY r.project_id, r.target_kind, r.target_key, r.base_commit"
 const LATEST_ROUND_QUERY = "SELECT id, review_id, ordinal, payload_hash, intent_type, intent_ref, completed_at FROM review_rounds WHERE review_id = ? ORDER BY ordinal DESC LIMIT 1"
 const SPECIFIC_ROUND_QUERY = "SELECT id, review_id, ordinal, payload_hash, intent_type, intent_ref, completed_at FROM review_rounds WHERE review_id = ? AND id = ?"
+const PREVIOUS_IGNORED_QUERY = "SELECT id, disposition, severity, category, title, body_markdown, wontfix, source_agents_json, content_hash FROM findings WHERE round_id = (SELECT id FROM review_rounds WHERE review_id = ? ORDER BY ordinal DESC LIMIT 1) AND disposition = 'ignored' ORDER BY ordinal"
+const REVIEW_SCOPE_QUERY = "SELECT p.project_key, r.target_kind, w.path FROM reviews r JOIN projects p ON p.id = r.project_id JOIN worktrees w ON w.id = r.worktree_id WHERE r.id = ?"
+const LIST_ROUNDS_QUERY = "SELECT id, review_id, ordinal, payload_hash, intent_type, intent_ref, completed_at FROM review_rounds WHERE review_id = ? ORDER BY ordinal"
+const LOCK_QUERY = "SELECT review_id, fencing_token, acquired_at, session_id FROM review_locks WHERE review_id = ?"
+const ROUND_FINDINGS_QUERY = "SELECT id, disposition, severity, category, title, body_markdown, wontfix, source_agents_json, content_hash FROM findings WHERE round_id = ? ORDER BY disposition, ordinal"
+const ROUND_UNCERTAINTIES_QUERY = "SELECT id, ordinal, title, observed_evidence, missing_context, clarification_question FROM intent_uncertainties WHERE round_id = ? ORDER BY ordinal"
+const FINDING_BLOCKS_QUERY = "SELECT b.finding_id, b.uncertainty_id FROM finding_intent_blocks b JOIN intent_uncertainties u ON u.id = b.uncertainty_id WHERE u.round_id = ? ORDER BY b.finding_id, u.ordinal"
+const LANE_TABLE_QUERY = "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'review_round_lanes'"
+const ROUND_LANES_QUERY = "SELECT lane, status, failure_reason FROM review_round_lanes WHERE round_id = ? ORDER BY lane"
 
 type FindingRow = {
   id: number
@@ -58,6 +67,20 @@ type LaneRow = {
   lane: string
   status: "completed" | "failed" | null
   failure_reason: string | null
+}
+
+type UncertaintyRow = {
+  id: number
+  ordinal: number
+  title: string
+  observed_evidence: string
+  missing_context: string
+  clarification_question: string
+}
+
+type FindingBlockRow = {
+  finding_id: number
+  uncertainty_id: number
 }
 
 function rowFinding(row: FindingRow): NormalizedFinding {
@@ -107,14 +130,14 @@ function summaryRows(database: SqliteDatabase, scope: { projectKey?: string; wor
 }
 
 export function previousIgnored(database: SqliteDatabase, reviewId: string, lanes?: string[]): IgnoredSnapshot[] {
-  const rows = database.prepare("SELECT id, disposition, severity, category, title, body_markdown, wontfix, source_agents_json, content_hash FROM findings WHERE round_id = (SELECT id FROM review_rounds WHERE review_id = ? ORDER BY ordinal DESC LIMIT 1) AND disposition = 'ignored' ORDER BY ordinal").all(reviewId) as FindingRow[]
+  const rows = database.prepare(PREVIOUS_IGNORED_QUERY).all(reviewId) as FindingRow[]
   const categories = lanes === undefined ? undefined : new Set(findingCategoriesForLanes(lanes))
   return rows.filter((row) => categories === undefined || categories.has(row.category)).map((row) => ({ id: Number(row.id), ...rowFinding(row) }))
 }
 
 export function assertReviewScope(options: DatabaseOptions, reviewId: string, scope: ReviewScope): void {
   withDatabase(options, (database) => {
-    const row = database.prepare("SELECT p.project_key, r.target_kind, w.path FROM reviews r JOIN projects p ON p.id = r.project_id JOIN worktrees w ON w.id = r.worktree_id WHERE r.id = ?").get(reviewId) as {
+    const row = database.prepare(REVIEW_SCOPE_QUERY).get(reviewId) as {
       project_key: string
       target_kind: string
       path: string
@@ -143,7 +166,7 @@ export function getSummary(options: DatabaseOptions, reviewId: string): ReviewSu
 
 export function listRounds(options: DatabaseOptions, reviewId: string): ReviewRound[] {
   return withDatabase(options, (database) => {
-    const rounds = database.prepare("SELECT id, review_id, ordinal, payload_hash, intent_type, intent_ref, completed_at FROM review_rounds WHERE review_id = ? ORDER BY ordinal").all(reviewId) as RoundRow[]
+    const rounds = database.prepare(LIST_ROUNDS_QUERY).all(reviewId) as RoundRow[]
     return rounds.map((round) => readRound(database, round))
   })
 }
@@ -159,7 +182,7 @@ export function getRound(options: DatabaseOptions, reviewId: string, roundId?: s
 
 export function inspectLock(options: DatabaseOptions, reviewId: string): LockInfo | undefined {
   return withDatabase(options, (database) => {
-    const row = database.prepare("SELECT review_id, fencing_token, acquired_at, session_id FROM review_locks WHERE review_id = ?").get(reviewId) as {
+    const row = database.prepare(LOCK_QUERY).get(reviewId) as {
       review_id: string
       fencing_token: string
       acquired_at: string
@@ -175,32 +198,11 @@ export function inspectLock(options: DatabaseOptions, reviewId: string): LockInf
 }
 
 function readRound(database: SqliteDatabase, row: RoundRow): ReviewRound {
-  const findings = database.prepare("SELECT id, disposition, severity, category, title, body_markdown, wontfix, source_agents_json, content_hash FROM findings WHERE round_id = ? ORDER BY disposition, ordinal").all(row.id) as FindingRow[]
-  const uncertainties = database.prepare("SELECT id, ordinal, title, observed_evidence, missing_context, clarification_question FROM intent_uncertainties WHERE round_id = ? ORDER BY ordinal").all(row.id) as Array<{
-    id: number
-    ordinal: number
-    title: string
-    observed_evidence: string
-    missing_context: string
-    clarification_question: string
-  }>
-  const uncertaintyIds = new Map(uncertainties.map((uncertainty) => [Number(uncertainty.id), String(uncertainty.ordinal)]))
-  const blocks = database.prepare("SELECT b.finding_id, b.uncertainty_id FROM finding_intent_blocks b JOIN intent_uncertainties u ON u.id = b.uncertainty_id WHERE u.round_id = ? ORDER BY b.finding_id, u.ordinal").all(row.id) as Array<{ finding_id: number; uncertainty_id: number }>
-  const blockedByFinding = new Map<number, string[]>()
-  for (const block of blocks) {
-    const values = blockedByFinding.get(Number(block.finding_id)) ?? []
-    values.push(uncertaintyIds.get(Number(block.uncertainty_id)) as string)
-    blockedByFinding.set(Number(block.finding_id), values)
-  }
-  const mappedFindings = findings.map((finding) => ({
-    ...rowFinding(finding),
-    blockedByUncertaintyIds: blockedByFinding.get(Number(finding.id)) ?? [],
-    ...(finding.disposition === "ignored" ? { id: Number(finding.id) } : {}),
-  }))
-  const laneTable = database.prepare("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'review_round_lanes'").get()
-  const lanes = laneTable === undefined
-    ? []
-    : database.prepare("SELECT lane, status, failure_reason FROM review_round_lanes WHERE round_id = ? ORDER BY lane").all(row.id) as LaneRow[]
+  const findingRows = loadRoundFindings(database, row.id)
+  const uncertainties = loadUncertainties(database, row.id)
+  const blockedByFinding = loadFindingBlockers(database, row.id, uncertainties)
+  const findings = mapRoundFindings(findingRows, blockedByFinding)
+  const lanes = loadLaneMetadata(database, row.id)
   return {
     id: row.id,
     reviewId: row.review_id,
@@ -216,8 +218,8 @@ function readRound(database: SqliteDatabase, row: RoundRow): ReviewRound {
       })),
     }),
     completedAt: row.completed_at,
-    validFindings: mappedFindings.filter((finding): finding is NormalizedFinding => finding.disposition === "valid"),
-    ignoredFindings: mappedFindings.filter((finding): finding is IgnoredSnapshot => finding.disposition === "ignored"),
+    validFindings: findings.valid,
+    ignoredFindings: findings.ignored,
     uncertainties: uncertainties.map((uncertainty) => ({
       title: uncertainty.title,
       observedEvidence: uncertainty.observed_evidence,
@@ -225,4 +227,46 @@ function readRound(database: SqliteDatabase, row: RoundRow): ReviewRound {
       clarificationQuestion: uncertainty.clarification_question,
     })),
   }
+}
+
+function loadUncertainties(database: SqliteDatabase, roundId: string): UncertaintyRow[] {
+  return database.prepare(ROUND_UNCERTAINTIES_QUERY).all(roundId) as UncertaintyRow[]
+}
+
+function loadFindingBlockers(database: SqliteDatabase, roundId: string, uncertainties: UncertaintyRow[]): Map<number, string[]> {
+  const uncertaintyIds = new Map(uncertainties.map((uncertainty) => [Number(uncertainty.id), String(uncertainty.ordinal)]))
+  const blocks = database.prepare(FINDING_BLOCKS_QUERY).all(roundId) as FindingBlockRow[]
+  const blockedByFinding = new Map<number, string[]>()
+  for (const block of blocks) {
+    const values = blockedByFinding.get(Number(block.finding_id)) ?? []
+    values.push(uncertaintyIds.get(Number(block.uncertainty_id)) as string)
+    blockedByFinding.set(Number(block.finding_id), values)
+  }
+  return blockedByFinding
+}
+
+function loadRoundFindings(database: SqliteDatabase, roundId: string): FindingRow[] {
+  return database.prepare(ROUND_FINDINGS_QUERY).all(roundId) as FindingRow[]
+}
+
+function mapRoundFindings(findings: FindingRow[], blockedByFinding: Map<number, string[]>): {
+  valid: NormalizedFinding[]
+  ignored: IgnoredSnapshot[]
+} {
+  const mappedFindings = findings.map((finding) => ({
+    ...rowFinding(finding),
+    blockedByUncertaintyIds: blockedByFinding.get(Number(finding.id)) ?? [],
+    ...(finding.disposition === "ignored" ? { id: Number(finding.id) } : {}),
+  }))
+  return {
+    valid: mappedFindings.filter((finding): finding is NormalizedFinding => finding.disposition === "valid"),
+    ignored: mappedFindings.filter((finding): finding is IgnoredSnapshot => finding.disposition === "ignored"),
+  }
+}
+
+function loadLaneMetadata(database: SqliteDatabase, roundId: string): LaneRow[] {
+  const laneTable = database.prepare(LANE_TABLE_QUERY).get()
+  return laneTable === undefined
+    ? []
+    : database.prepare(ROUND_LANES_QUERY).all(roundId) as LaneRow[]
 }
