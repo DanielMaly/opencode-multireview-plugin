@@ -13,6 +13,10 @@ import type {
 import { LEGACY_SESSION_ID } from "../review.js"
 import { findingCategoriesForLanes } from "../lanes.js"
 
+const SUMMARY_ROWS_QUERY = "SELECT r.id, r.target_kind, r.target_key, r.target_label, r.base_ref, r.base_commit, r.current_intent_type, r.current_intent_ref, rr.id AS latest_round_id, rr.completed_at AS latest_round_at, rl.fencing_token, rl.acquired_at FROM reviews r JOIN projects p ON p.id = r.project_id JOIN worktrees w ON w.id = r.worktree_id LEFT JOIN review_rounds rr ON rr.review_id = r.id AND rr.ordinal = (SELECT MAX(ordinal) FROM review_rounds WHERE review_id = r.id) LEFT JOIN review_locks rl ON rl.review_id = r.id WHERE (? IS NULL OR p.project_key = ?) AND (? IS NULL OR r.target_kind != 'uncommitted' OR w.path = ?) AND (? IS NULL OR r.id = ?) ORDER BY r.project_id, r.target_kind, r.target_key, r.base_commit"
+const LATEST_ROUND_QUERY = "SELECT id, review_id, ordinal, payload_hash, intent_type, intent_ref, completed_at FROM review_rounds WHERE review_id = ? ORDER BY ordinal DESC LIMIT 1"
+const SPECIFIC_ROUND_QUERY = "SELECT id, review_id, ordinal, payload_hash, intent_type, intent_ref, completed_at FROM review_rounds WHERE review_id = ? AND id = ?"
+
 type FindingRow = {
   id: number
   disposition: "valid" | "ignored"
@@ -92,7 +96,7 @@ function scopedSummary(value: SummaryRow): ScopedReviewSummary {
 }
 
 function summaryRows(database: SqliteDatabase, scope: { projectKey?: string; worktreePath?: string; reviewId?: string }): SummaryRow[] {
-  return database.prepare("SELECT r.id, r.target_kind, r.target_key, r.target_label, r.base_ref, r.base_commit, r.current_intent_type, r.current_intent_ref, rr.id AS latest_round_id, rr.completed_at AS latest_round_at, rl.fencing_token, rl.acquired_at FROM reviews r JOIN projects p ON p.id = r.project_id JOIN worktrees w ON w.id = r.worktree_id LEFT JOIN review_rounds rr ON rr.review_id = r.id AND rr.ordinal = (SELECT MAX(ordinal) FROM review_rounds WHERE review_id = r.id) LEFT JOIN review_locks rl ON rl.review_id = r.id WHERE (? IS NULL OR p.project_key = ?) AND (? IS NULL OR r.target_kind != 'uncommitted' OR w.path = ?) AND (? IS NULL OR r.id = ?) ORDER BY r.project_id, r.target_kind, r.target_key, r.base_commit").all(
+  return database.prepare(SUMMARY_ROWS_QUERY).all(
     scope.projectKey ?? null,
     scope.projectKey ?? null,
     scope.worktreePath ?? null,
@@ -147,8 +151,8 @@ export function listRounds(options: DatabaseOptions, reviewId: string): ReviewRo
 export function getRound(options: DatabaseOptions, reviewId: string, roundId?: string): ReviewRound | undefined {
   return withDatabase(options, (database) => {
     const row = roundId === undefined
-      ? database.prepare("SELECT id, review_id, ordinal, payload_hash, intent_type, intent_ref, completed_at FROM review_rounds WHERE review_id = ? ORDER BY ordinal DESC LIMIT 1").get(reviewId)
-      : database.prepare("SELECT id, review_id, ordinal, payload_hash, intent_type, intent_ref, completed_at FROM review_rounds WHERE review_id = ? AND id = ?").get(reviewId, roundId)
+      ? database.prepare(LATEST_ROUND_QUERY).get(reviewId)
+      : database.prepare(SPECIFIC_ROUND_QUERY).get(reviewId, roundId)
     return row ? readRound(database, row as RoundRow) : undefined
   })
 }

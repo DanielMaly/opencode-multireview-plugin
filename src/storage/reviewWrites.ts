@@ -12,6 +12,8 @@ import { activeLaneSnapshot, resolveMarkers } from "./reviewLifecycle.js"
 import { laneByName, normalizeLanes, validateFindingOwnership } from "../lanes.js"
 import type { LaneResult } from "../review.js"
 
+const ACTIVE_LOCK_QUERY = "SELECT l.fencing_token, l.pending_round_id, l.session_id, r.current_intent_type, r.current_intent_ref, (SELECT COUNT(*) FROM review_round_lanes WHERE review_id = l.review_id) AS lane_count FROM review_locks l JOIN reviews r ON r.id = l.review_id WHERE l.review_id = ?"
+
 function now(): string {
   return new Date().toISOString()
 }
@@ -158,7 +160,7 @@ export function complete(options: DatabaseOptions, request: CompleteReviewReques
         lane_count: number
       } | undefined
       if (!existingRound) {
-        activeLock = database.prepare("SELECT l.fencing_token, l.pending_round_id, l.session_id, r.current_intent_type, r.current_intent_ref, (SELECT COUNT(*) FROM review_round_lanes WHERE review_id = l.review_id) AS lane_count FROM review_locks l JOIN reviews r ON r.id = l.review_id WHERE l.review_id = ?").get(request.reviewId) as typeof activeLock
+        activeLock = database.prepare(ACTIVE_LOCK_QUERY).get(request.reviewId) as typeof activeLock
         if (!activeLock) throw new Error("review lock fencing token is stale or missing")
         const hasMatchingLock = activeLock.fencing_token === request.fencingToken
         if (!hasMatchingLock) throw new Error("review lock fencing token is stale or missing")
