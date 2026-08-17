@@ -284,24 +284,54 @@ type DispositionRow = {
   current_reason: string | null
 }
 
+type DispositionResultOptions = {
+  overridden: boolean
+  idempotent: boolean
+}
+
 export function setFindingDisposition(options: DatabaseOptions, request: SetFindingDispositionRequest): SetFindingDispositionResult {
   return withDatabase(options, (database) => {
     database.exec("BEGIN IMMEDIATE")
     try {
       validateFindingId(request.findingId)
-      const row = database.prepare("SELECT f.id AS finding_id, f.round_id, rr.review_id, rr.ordinal AS round_ordinal, (SELECT MAX(latest.ordinal) FROM review_rounds latest WHERE latest.review_id = rr.review_id) AS latest_round_ordinal, r.target_kind, p.project_key, w.path AS worktree_path, f.disposition AS original_disposition, f.wontfix AS original_wontfix, o.disposition AS current_disposition, o.reason AS current_reason FROM findings f JOIN review_rounds rr ON rr.id = f.round_id JOIN reviews r ON r.id = rr.review_id JOIN projects p ON p.id = r.project_id JOIN worktrees w ON w.id = r.worktree_id LEFT JOIN finding_disposition_overrides o ON o.finding_id = f.id WHERE f.id = ?").get(request.findingId) as DispositionRow | undefined
+      const row = database.prepare(`
+        SELECT
+          f.id AS finding_id,
+          f.round_id,
+          rr.review_id,
+          rr.ordinal AS round_ordinal,
+          (
+            SELECT MAX(latest.ordinal)
+            FROM review_rounds latest
+            WHERE latest.review_id = rr.review_id
+          ) AS latest_round_ordinal,
+          r.target_kind,
+          p.project_key,
+          w.path AS worktree_path,
+          f.disposition AS original_disposition,
+          f.wontfix AS original_wontfix,
+          o.disposition AS current_disposition,
+          o.reason AS current_reason
+        FROM findings f
+        JOIN review_rounds rr ON rr.id = f.round_id
+        JOIN reviews r ON r.id = rr.review_id
+        JOIN projects p ON p.id = r.project_id
+        JOIN worktrees w ON w.id = r.worktree_id
+        LEFT JOIN finding_disposition_overrides o ON o.finding_id = f.id
+        WHERE f.id = ?
+      `).get(request.findingId) as DispositionRow | undefined
       if (!row) throw new Error(`unknown finding ${request.findingId}`)
-      if (row.round_ordinal !== row.latest_round_ordinal) throw new Error("finding is not in the latest completed round")
+      if (Number(row.round_ordinal) !== Number(row.latest_round_ordinal)) throw new Error("finding is not in the latest completed round")
       if (database.prepare("SELECT 1 AS active FROM review_locks WHERE review_id = ?").get(row.review_id)) throw new Error("finding review has an active lock")
       if (request.scope) validateDispositionScope(row, request.scope)
       const reason = validateDispositionRequest(request.disposition, request.reason)
-      const originalMatches = row.original_disposition === request.disposition && (request.disposition === "valid" || row.original_wontfix === reason)
+      const originalMatches = dispositionMatches(row.original_disposition, row.original_wontfix, request.disposition, reason)
       const currentDisposition = row.current_disposition ?? row.original_disposition
       const currentReason = row.current_disposition === null ? row.original_wontfix : row.current_reason
-      const currentMatches = currentDisposition === request.disposition && (request.disposition === "valid" || currentReason === reason)
+      const currentMatches = dispositionMatches(currentDisposition, currentReason, request.disposition, reason)
       if (currentMatches) {
         database.exec("COMMIT")
-        return dispositionResult(row, request.disposition, reason, row.current_disposition !== null, true)
+        return dispositionResult(row, request.disposition, reason, { overridden: row.current_disposition !== null, idempotent: true })
       }
       if (originalMatches) {
         database.prepare("DELETE FROM finding_disposition_overrides WHERE finding_id = ?").run(request.findingId)
@@ -314,7 +344,7 @@ export function setFindingDisposition(options: DatabaseOptions, request: SetFind
         )
       }
       database.exec("COMMIT")
-      return dispositionResult(row, request.disposition, reason, !originalMatches, false)
+      return dispositionResult(row, request.disposition, reason, { overridden: !originalMatches, idempotent: false })
     } catch (error) {
       try { database.exec("ROLLBACK") } catch { /* retain original error */ }
       throw error
@@ -331,8 +361,20 @@ function validateDispositionRequest(disposition: FindingDisposition, rawReason: 
     if (rawReason !== undefined) throw new Error("valid disposition cannot include reason")
     return null
   }
-  if (typeof rawReason !== "string" || rawReason.trim() === "") throw new Error("ignored disposition requires a non-empty reason")
-  return rawReason.trim()
+  if (typeof rawReason !== "string") throw new Error("ignored disposition requires a non-empty reason")
+  const reason = rawReason.replaceAll("\r\n", "\n").replaceAll("\r", "\n").trim()
+  if (!reason) throw new Error("ignored disposition requires a non-empty reason")
+  return reason
+}
+
+function dispositionMatches(
+  candidateDisposition: FindingDisposition,
+  candidateReason: string | null,
+  requestedDisposition: FindingDisposition,
+  requestedReason: string | null,
+): boolean {
+  if (candidateDisposition !== requestedDisposition) return false
+  return requestedDisposition === "valid" || candidateReason === requestedReason
 }
 
 function validateDispositionScope(row: DispositionRow, scope: NonNullable<SetFindingDispositionRequest["scope"]>): void {
@@ -342,7 +384,7 @@ function validateDispositionScope(row: DispositionRow, scope: NonNullable<SetFin
   }
 }
 
-function dispositionResult(row: DispositionRow, disposition: FindingDisposition, reason: string | null, overridden: boolean, idempotent: boolean): SetFindingDispositionResult {
+function dispositionResult(row: DispositionRow, disposition: FindingDisposition, reason: string | null, options: DispositionResultOptions): SetFindingDispositionResult {
   return {
     reviewId: row.review_id,
     roundId: row.round_id,
@@ -351,8 +393,8 @@ function dispositionResult(row: DispositionRow, disposition: FindingDisposition,
     ...(disposition === "ignored" ? { wontfix: reason as string } : {}),
     originalDisposition: row.original_disposition,
     ...(row.original_disposition === "ignored" && row.original_wontfix !== null ? { originalWontfix: row.original_wontfix } : {}),
-    overridden,
-    idempotent,
+    overridden: options.overridden,
+    idempotent: options.idempotent,
   }
 }
 

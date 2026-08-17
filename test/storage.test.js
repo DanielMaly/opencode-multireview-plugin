@@ -530,18 +530,34 @@ test("projects reversible effective dispositions without changing original rows 
     assert.equal(redismissedEffective.originalDisposition, "valid");
     assert.equal(store.setFindingDisposition({ findingId: mutable.id, disposition: "valid" }).overridden, false);
 
-    const restoredOriginalIgnored = store.setFindingDisposition({ findingId: originalIgnored.id, disposition: "valid" });
-    assert.equal(restoredOriginalIgnored.overridden, true);
-    assert.equal(restoredOriginalIgnored.originalWontfix, "Accepted trade-off");
-    const redismissedOriginalIgnored = store.setFindingDisposition({ findingId: originalIgnored.id, disposition: "ignored", reason: "Reconsidered trade-off" });
-    assert.deepEqual(redismissedOriginalIgnored, { reviewId: review.reviewId, roundId: review.roundId, findingId: originalIgnored.id, disposition: "ignored", wontfix: "Reconsidered trade-off", originalDisposition: "ignored", originalWontfix: "Accepted trade-off", overridden: true, idempotent: false });
-    const redismissedOriginalEffective = store.getRound(review.reviewId, review.roundId).ignoredFindings.find((finding) => finding.id === originalIgnored.id);
-    assert.equal(redismissedOriginalEffective.wontfix, "Reconsidered trade-off");
-    assert.equal(redismissedOriginalEffective.dispositionOverridden, true);
-    assert.equal(redismissedOriginalEffective.originalDisposition, "ignored");
-    assert.equal(redismissedOriginalEffective.originalWontfix, "Accepted trade-off");
+    const afterDatabase = openDatabase({ databasePath });
+    assert.deepEqual(afterDatabase.prepare("SELECT id, round_id, ordinal, disposition, severity, category, title, body_markdown, wontfix, source_agents_json, content_hash FROM findings WHERE round_id = ? ORDER BY id").all(review.roundId), beforeFindings);
+    assert.deepEqual(afterDatabase.prepare("SELECT id, payload_hash FROM review_rounds WHERE id = ?").get(review.roundId), beforeRound);
+    afterDatabase.close();
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
-    const next = store.begin({ identity: identity(), target: target("dispositions") });
+test("preserves original ignored metadata in historical projections and rejects stale mutation", () => {
+  const { directory, databasePath } = temporaryPath();
+  try {
+    const store = new ReviewStore({ databasePath });
+    const review = store.begin({ identity: identity(), target: target("historical-disposition") });
+    completeStore(store, { reviewId: review.reviewId, roundId: review.roundId, fencingToken: review.fencingToken, ignoredFindings: [ignoredFinding()] });
+    const originalIgnored = store.getRound(review.reviewId, review.roundId).ignoredFindings[0];
+    const restored = store.setFindingDisposition({ findingId: originalIgnored.id, disposition: "valid" });
+    assert.equal(restored.overridden, true);
+    assert.equal(restored.originalWontfix, "Accepted trade-off");
+    const redismissed = store.setFindingDisposition({ findingId: originalIgnored.id, disposition: "ignored", reason: "Reconsidered trade-off" });
+    assert.deepEqual(redismissed, { reviewId: review.reviewId, roundId: review.roundId, findingId: originalIgnored.id, disposition: "ignored", wontfix: "Reconsidered trade-off", originalDisposition: "ignored", originalWontfix: "Accepted trade-off", overridden: true, idempotent: false });
+    const redismissedEffective = store.getRound(review.reviewId, review.roundId).ignoredFindings.find((finding) => finding.id === originalIgnored.id);
+    assert.equal(redismissedEffective.wontfix, "Reconsidered trade-off");
+    assert.equal(redismissedEffective.dispositionOverridden, true);
+    assert.equal(redismissedEffective.originalDisposition, "ignored");
+    assert.equal(redismissedEffective.originalWontfix, "Accepted trade-off");
+
+    const next = store.begin({ identity: identity(), target: target("historical-disposition") });
     completeStore(store, { reviewId: next.reviewId, roundId: next.roundId, fencingToken: next.fencingToken, validFindings: [validFinding("Newer")] });
     const historical = store.getRound(review.reviewId, review.roundId);
     const historicalOriginalIgnored = historical.ignoredFindings.find((finding) => finding.id === originalIgnored.id);
@@ -549,11 +565,6 @@ test("projects reversible effective dispositions without changing original rows 
     assert.equal(historicalOriginalIgnored.dispositionOverridden, true);
     assert.equal(historicalOriginalIgnored.originalDisposition, "ignored");
     assert.throws(() => store.setFindingDisposition({ findingId: originalIgnored.id, disposition: "valid" }), /latest completed round/);
-
-    const afterDatabase = openDatabase({ databasePath });
-    assert.deepEqual(afterDatabase.prepare("SELECT id, round_id, ordinal, disposition, severity, category, title, body_markdown, wontfix, source_agents_json, content_hash FROM findings WHERE round_id = ? ORDER BY id").all(review.roundId), beforeFindings);
-    assert.deepEqual(afterDatabase.prepare("SELECT id, payload_hash FROM review_rounds WHERE id = ?").get(review.roundId), beforeRound);
-    afterDatabase.close();
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -579,6 +590,87 @@ test("uses effective prior ignored candidates and enforces validation, locks, fr
     assert.deepEqual(afterRestore.previousIgnored, []);
     completeStore(store, { reviewId: afterRestore.reviewId, roundId: afterRestore.roundId, fencingToken: afterRestore.fencingToken, laneResults: [{ lane: "correctness", status: "completed" }] });
     assert.throws(() => store.setFindingDisposition({ findingId: finding.id, disposition: "ignored", reason: "Stale" }), /latest completed round/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("normalizes CRLF reasons and removes an override when restoring an original ignored reason", () => {
+  const { directory, databasePath } = temporaryPath();
+  try {
+    const store = new ReviewStore({ databasePath });
+    const review = store.begin({ identity: identity(), target: target("reason-normalization") });
+    completeStore(store, {
+      reviewId: review.reviewId,
+      roundId: review.roundId,
+      fencingToken: review.fencingToken,
+      ignoredFindings: [ignoredFinding()],
+    });
+    const finding = store.getRound(review.reviewId).ignoredFindings[0];
+    assert.equal(store.setFindingDisposition({ findingId: finding.id, disposition: "valid" }).overridden, true);
+    const restored = store.setFindingDisposition({ findingId: finding.id, disposition: "ignored", reason: " \r\nAccepted trade-off\r " });
+    assert.equal(restored.overridden, false);
+    assert.equal(restored.idempotent, false);
+    const effective = store.getRound(review.reviewId).ignoredFindings[0];
+    assert.equal(effective.wontfix, "Accepted trade-off");
+    assert.equal(Object.hasOwn(effective, "dispositionOverridden"), false);
+    const database = openDatabase({ databasePath });
+    assert.equal(database.prepare("SELECT COUNT(*) AS count FROM finding_disposition_overrides").get().count, 0);
+    database.close();
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("projects an originally ignored finding as valid with metadata and excludes it from prior ignored candidates", () => {
+  const { directory, databasePath } = temporaryPath();
+  try {
+    const store = new ReviewStore({ databasePath });
+    const review = store.begin({ identity: identity(), target: target("restored-read") });
+    completeStore(store, {
+      reviewId: review.reviewId,
+      roundId: review.roundId,
+      fencingToken: review.fencingToken,
+      ignoredFindings: [ignoredFinding()],
+    });
+    const finding = store.getRound(review.reviewId).ignoredFindings[0];
+    store.setFindingDisposition({ findingId: finding.id, disposition: "valid" });
+    const effective = store.getRound(review.reviewId);
+    const restored = effective.validFindings.find((item) => item.id === finding.id);
+    assert.equal(restored.disposition, "valid");
+    assert.equal(restored.dispositionOverridden, true);
+    assert.equal(restored.originalDisposition, "ignored");
+    assert.equal(restored.originalWontfix, "Accepted trade-off");
+    assert.equal(effective.ignoredFindings.some((item) => item.id === finding.id), false);
+    const next = store.begin({ identity: identity(), target: target("restored-read") });
+    assert.equal(next.previousIgnored.some((item) => item.id === finding.id), false);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("rolls back a failed override mutation and permits a later successful transaction", () => {
+  const { directory, databasePath } = temporaryPath();
+  try {
+    const store = new ReviewStore({ databasePath });
+    const review = store.begin({ identity: identity(), target: target("rollback") });
+    completeStore(store, { reviewId: review.reviewId, roundId: review.roundId, fencingToken: review.fencingToken, validFindings: [validFinding("Rollback")] });
+    const finding = store.getRound(review.reviewId).validFindings[0];
+    const database = openDatabase({ databasePath });
+    database.exec("CREATE TRIGGER fail_disposition_override BEFORE INSERT ON finding_disposition_overrides BEGIN SELECT RAISE(ABORT, 'forced disposition failure'); END");
+    database.close();
+    assert.throws(() => store.setFindingDisposition({ findingId: finding.id, disposition: "ignored", reason: "Should roll back" }), /forced disposition failure/);
+    assert.equal(store.getRound(review.reviewId).validFindings.find((item) => item.id === finding.id).disposition, "valid");
+    const afterFailure = openDatabase({ databasePath });
+    assert.equal(afterFailure.prepare("SELECT COUNT(*) AS count FROM finding_disposition_overrides").get().count, 0);
+    afterFailure.close();
+
+    const withoutTrigger = openDatabase({ databasePath });
+    withoutTrigger.exec("DROP TRIGGER fail_disposition_override");
+    withoutTrigger.close();
+    const succeeded = store.setFindingDisposition({ findingId: finding.id, disposition: "ignored", reason: "After rollback" });
+    assert.equal(succeeded.overridden, true);
+    assert.equal(store.getRound(review.reviewId).ignoredFindings.find((item) => item.id === finding.id).wontfix, "After rollback");
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

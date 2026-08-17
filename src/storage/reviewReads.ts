@@ -59,26 +59,40 @@ type LaneRow = {
   failure_reason: string | null
 }
 
-function rowFinding(row: FindingRow): FindingSnapshot {
-  const overridden = row.override_disposition !== null
+type EffectiveFindingState = {
+  disposition: FindingDisposition
+  wontfix?: string
+  dispositionOverridden?: true
+  originalDisposition?: FindingDisposition
+  originalWontfix?: string
+}
+
+function effectiveFindingState(row: FindingRow): EffectiveFindingState {
   const disposition = row.override_disposition ?? row.disposition
-  const wontfix = disposition === "ignored" ? row.override_reason ?? row.wontfix ?? undefined : undefined
+  const state: EffectiveFindingState = { disposition }
+  if (disposition === "ignored") {
+    const wontfix = row.override_reason ?? row.wontfix ?? undefined
+    if (wontfix !== undefined) state.wontfix = wontfix
+  }
+  if (row.override_disposition !== null) {
+    state.dispositionOverridden = true
+    state.originalDisposition = row.disposition
+    if (row.wontfix !== null) state.originalWontfix = row.wontfix
+  }
+  return state
+}
+
+function rowFinding(row: FindingRow): FindingSnapshot {
   return {
     id: Number(row.id),
-    disposition,
+    ...effectiveFindingState(row),
     severity: row.severity,
     category: row.category,
     title: row.title,
     bodyMarkdown: row.body_markdown,
-    ...(wontfix === undefined ? {} : { wontfix }),
     sourceAgents: JSON.parse(row.source_agents_json) as string[],
     blockedByUncertaintyIds: [],
     contentHash: row.content_hash,
-    ...(overridden ? {
-      dispositionOverridden: true,
-      originalDisposition: row.disposition,
-      ...(row.disposition === "ignored" && row.wontfix !== null ? { originalWontfix: row.wontfix } : {}),
-    } : {}),
   }
 }
 
@@ -118,7 +132,7 @@ export function previousIgnored(database: SqliteDatabase, reviewId: string, lane
   const rows = database.prepare(findingQuery(database, "f.round_id = (SELECT id FROM review_rounds WHERE review_id = ? ORDER BY ordinal DESC LIMIT 1)"))
     .all(reviewId) as FindingRow[]
   const categories = lanes === undefined ? undefined : new Set(findingCategoriesForLanes(lanes))
-  return rows.filter((row) => row.override_disposition === "ignored" || (row.override_disposition === null && row.disposition === "ignored"))
+  return rows.filter((row) => effectiveFindingState(row).disposition === "ignored")
     .filter((row) => categories === undefined || categories.has(row.category))
     .map((row) => rowFinding(row))
 }
