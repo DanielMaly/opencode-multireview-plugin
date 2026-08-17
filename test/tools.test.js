@@ -512,7 +512,9 @@ test("sets finding dispositions through allowed callers and rejects specialists 
 
     const ignoredRound = parse(await tools.mmar_get_findings.execute({ reviewId: begun.reviewId }, context(project, normalAgent)));
     assert.equal(ignoredRound.validFindings.some(({ id }) => id === finding.id), false);
-    assert.deepEqual(ignoredRound.ignoredFindings.find(({ id }) => id === finding.id), {
+    const ignoredFinding = ignoredRound.ignoredFindings.find(({ id }) => id === finding.id);
+    assert.ok(ignoredFinding);
+    assert.deepEqual(ignoredFinding, {
       id: finding.id,
       disposition: "ignored",
       wontfix: "User accepted",
@@ -524,7 +526,7 @@ test("sets finding dispositions through allowed callers and rejects specialists 
       bodyMarkdown: "Evidence",
       sourceAgents: [specialistAgentFor("correctness")],
       blockedByUncertaintyIds: [],
-      contentHash: ignoredRound.ignoredFindings.find(({ id }) => id === finding.id).contentHash,
+      contentHash: ignoredFinding.contentHash,
     });
     assert.equal(parse(await tools.mmar_set_finding_disposition.execute({ findingId: finding.id, disposition: "ignored", reason: "User accepted" }, context(project))).idempotent, true);
     const orchestratorResult = parse(await tools.mmar_set_finding_disposition.execute({ findingId: finding.id, disposition: "valid" }, context(project, "mmar_orchestrator")));

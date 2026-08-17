@@ -99,7 +99,10 @@ function validateToolContext(context: ToolContext): void {
   const agent = context.agent
   const directory = context.directory.trim()
   const worktree = context.worktree.trim()
-  if (typeof agent !== "string" || agent.length === 0 || agent.trim() !== agent) throw new Error("MMAR tool context must include an unpadded agent identity")
+  const isMissingAgent = typeof agent !== "string" || agent.length === 0
+  const isPaddedAgent = typeof agent === "string" && agent.trim() !== agent
+  const hasInvalidAgent = isMissingAgent || isPaddedAgent
+  if (hasInvalidAgent) throw new Error("MMAR tool context must include an unpadded agent identity")
   if (!directory || !worktree) throw new Error("MMAR tool context must include directory and worktree")
   const sessionID = context.sessionID?.trim()
   if (!sessionID || sessionID === LEGACY_SESSION_ID) throw new Error("MMAR tool context must include a valid sessionID")
@@ -217,7 +220,7 @@ export function createMmarTools(databaseOptions: DatabaseOptions = {}): Record<s
   })
 
   const setFindingDisposition = tool({
-    description: "For an explicit user request, any normal agent or mmar_orchestrator with valid context/session may set a finding disposition in the trusted current worktree without starting a review round; canonical specialists are denied. Ignored requires a non-empty reason; valid forbids reason.",
+    description: "After an explicit user request, set a finding disposition without starting a review round. Available to any normal agent or mmar_orchestrator with valid context/session in the trusted current worktree; canonical specialists are denied. `ignored` requires a non-empty reason. `valid` forbids a reason.",
     args: setFindingDispositionArgsSchema.shape,
     async execute(args, context) {
       const input = setFindingDispositionArgsSchema.parse(args)
