@@ -41,6 +41,8 @@ test("CLI uses Commander help and rejects invalid invocations", () => {
   assert.equal(help.status, 0)
   assert.match(help.stdout, /Manage OpenCode multireview history and skills/)
   assert.match(help.stdout, /export \[options\] <review-id>/)
+  assert.match(help.stdout, /dismiss <finding-id> \[reason\]/)
+  assert.match(help.stdout, /restore <finding-id>/)
   assert.match(help.stdout, /skill.*Manage installed multireview skills/)
 
   for (const args of [["export"], ["list", "--unknown"], ["skill", "install"], ["skill", "install", "--global", "--project"], ["unknown"]]) {
@@ -50,26 +52,43 @@ test("CLI uses Commander help and rejects invalid invocations", () => {
   }
 })
 
-function interactiveUnlock(reviewId, env) {
+function interactivePty(args, env, promptMarker, response, suffix = "\r") {
   const python = [
     "import os, pty, sys",
     "buffer = bytearray()",
-    "confirmed = False",
+    "answered = False",
     "def read(fd):",
-    "    global confirmed",
+    "    global answered",
     "    data = os.read(fd, 1024)",
     "    buffer.extend(data)",
-    "    if not confirmed and b'[y/N]' in buffer:",
-    "        confirmed = True",
-    "        os.write(fd, b'y\\r')",
+    "    if not answered and sys.argv[1].encode() in buffer:",
+    "        answered = True",
+    "        os.write(fd, sys.argv[2].encode() + sys.argv[3].encode())",
     "    return data",
-    "sys.exit(pty.spawn(sys.argv[1:], read))",
+    "status = pty.spawn(sys.argv[4:], read)",
+    "sys.exit(os.waitstatus_to_exitcode(status))",
   ].join("\n")
-  return spawnSync("python3", ["-c", python, process.execPath, cli.pathname, "unlock", reviewId], {
+  return spawnSync("python3", ["-c", python, promptMarker, response, suffix, process.execPath, cli.pathname, ...args], {
     env,
     encoding: "utf8",
     timeout: 10_000,
   })
+}
+
+function interactiveUnlock(reviewId, env) {
+  return interactivePty(["unlock", reviewId], env, "[y/N]", "y")
+}
+
+function interactiveDismiss(findingId, env, reason = "Interactive reason") {
+  return interactivePty(["dismiss", String(findingId)], env, "Reason for dismissing", reason)
+}
+
+function interactiveDismissAbort(findingId, env) {
+  return interactivePty(["dismiss", String(findingId)], env, "Reason for dismissing", "\x04", "")
+}
+
+function interactiveDismissInterrupt(findingId, env) {
+  return interactivePty(["dismiss", String(findingId)], env, "Reason for dismissing", "\x03", "")
 }
 
 function interactiveUnlockRace(context, reviewId) {
@@ -388,11 +407,206 @@ test("CLI reports a replaced lock and does not remove the replacement", async ()
   }
 })
 
+test("dismiss and restore update effective exports and reject missing noninteractive reasons", () => {
+  const context = fixture()
+  try {
+    const review = completeReview(context)
+    const finding = context.store().getRound(review.reviewId).validFindings[0]
+    const missing = run(["dismiss", String(finding.id)], context.env)
+    assert.notEqual(missing.status, 0)
+    assert.match(missing.stderr, /requires a reason argument when stdin or stdout is non-interactive/)
+
+    const dismissed = run(["dismiss", String(finding.id), "  Accepted for\r\nnow  "], context.env)
+    assert.equal(dismissed.status, 0, `${dismissed.stdout}\n${dismissed.stderr}`)
+    assert.match(dismissed.stdout, new RegExp(`Finding ${finding.id}.*effective disposition set to ignored`))
+    assert.equal(context.store().getRound(review.reviewId).ignoredFindings.find((item) => item.id === finding.id).wontfix, "Accepted for\nnow")
+    assert.match(run(["export", review.reviewId], context.env).stdout, /Wontfix: Accepted for\nnow/)
+
+    const repeated = run(["dismiss", String(finding.id), " Accepted for\nnow "], context.env)
+    assert.equal(repeated.status, 0, `${repeated.stdout}\n${repeated.stderr}`)
+    assert.match(repeated.stdout, /already in effective disposition ignored; idempotent no-op/)
+
+    const restored = run(["restore", String(finding.id)], context.env)
+    assert.equal(restored.status, 0, `${restored.stdout}\n${restored.stderr}`)
+    assert.match(restored.stdout, new RegExp(`Finding ${finding.id}.*effective disposition set to valid`))
+    assert.equal(context.store().getRound(review.reviewId).validFindings.find((item) => item.id === finding.id).disposition, "valid")
+    const restoredExport = run(["export", review.reviewId], context.env).stdout
+    const validSection = restoredExport.split("## Valid Findings\n\n")[1].split("\n\n## Intent Uncertainties")[0]
+    const ignoredSection = restoredExport.split("## Ignored Findings\n\n")[1]
+    assert.match(validSection, /\*\*\[CRITICAL\] \[CORRECTNESS\] Critical\*\*/)
+    assert.doesNotMatch(ignoredSection, /Critical|Accepted for/)
+
+    const repeatedRestore = run(["restore", String(finding.id)], context.env)
+    assert.equal(repeatedRestore.status, 0)
+    assert.match(repeatedRestore.stdout, /already in effective disposition valid; idempotent no-op/)
+  } finally {
+    rmSync(context.directory, { recursive: true, force: true })
+  }
+})
+
+test("dismiss prompts for a reason on a TTY", () => {
+  const context = fixture()
+  try {
+    const review = completeReview(context)
+    const finding = context.store().getRound(review.reviewId).validFindings[0]
+    const result = interactiveDismiss(finding.id, context.env)
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`)
+    assert.equal(context.store().getRound(review.reviewId).ignoredFindings.find((item) => item.id === finding.id).wontfix, "Interactive reason")
+  } finally {
+    rmSync(context.directory, { recursive: true, force: true })
+  }
+})
+
+test("dismiss prompt abort rejects without mutating the finding", () => {
+  const context = fixture()
+  try {
+    const review = completeReview(context)
+    const finding = context.store().getRound(review.reviewId).validFindings[0]
+    const result = interactiveDismissAbort(finding.id, context.env)
+    assert.notEqual(result.status, 0, `${result.stdout}\n${result.stderr}`)
+    assert.match(`${result.stdout}\n${result.stderr}`, /dismiss prompt aborted; provide a reason argument/)
+    assert.equal(context.store().getRound(review.reviewId).validFindings.some((item) => item.id === finding.id), true)
+    assert.equal(context.store().getRound(review.reviewId).ignoredFindings.some((item) => item.id === finding.id), false)
+  } finally {
+    rmSync(context.directory, { recursive: true, force: true })
+  }
+})
+
+test("dismiss prompt interrupt rejects without mutating the finding", () => {
+  const context = fixture()
+  try {
+    const review = completeReview(context)
+    const finding = context.store().getRound(review.reviewId).validFindings[0]
+    const result = interactiveDismissInterrupt(finding.id, context.env)
+    assert.notEqual(result.status, 0, `${result.stdout}\n${result.stderr}`)
+    assert.match(`${result.stdout}\n${result.stderr}`, /dismiss prompt aborted; provide a reason argument/)
+    assert.equal(context.store().getRound(review.reviewId).validFindings.some((item) => item.id === finding.id), true)
+    assert.equal(context.store().getRound(review.reviewId).ignoredFindings.some((item) => item.id === finding.id), false)
+  } finally {
+    rmSync(context.directory, { recursive: true, force: true })
+  }
+})
+
+test("dismiss rejects a whitespace-only prompted reason", () => {
+  const context = fixture()
+  try {
+    const review = completeReview(context)
+    const finding = context.store().getRound(review.reviewId).validFindings[0]
+    const result = interactiveDismiss(finding.id, context.env, " \t ")
+    assert.match(`${result.stdout}\n${result.stderr}`, /ignored disposition requires a non-empty reason/)
+    assert.equal(context.store().getRound(review.reviewId).validFindings.some((item) => item.id === finding.id), true)
+  } finally {
+    rmSync(context.directory, { recursive: true, force: true })
+  }
+})
+
+test("dismiss rejects a whitespace-only positional reason", () => {
+  const context = fixture()
+  try {
+    const review = completeReview(context)
+    const finding = context.store().getRound(review.reviewId).validFindings[0]
+    const result = run(["dismiss", String(finding.id), " \t "], context.env)
+    assert.notEqual(result.status, 0)
+    assert.match(result.stderr, /ignored disposition requires a non-empty reason/)
+    assert.equal(context.store().getRound(review.reviewId).validFindings.some((item) => item.id === finding.id), true)
+  } finally {
+    rmSync(context.directory, { recursive: true, force: true })
+  }
+})
+
+test("dismiss accepts a dash-prefixed reason after the option delimiter", () => {
+  const context = fixture()
+  try {
+    const review = completeReview(context)
+    const finding = context.store().getRound(review.reviewId).validFindings[0]
+    const result = run(["dismiss", String(finding.id), "--", "-duplicate finding"], context.env)
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`)
+    const dismissed = context.store().getRound(review.reviewId).ignoredFindings.find((item) => item.id === finding.id)
+    assert.equal(dismissed.wontfix, "-duplicate finding")
+  } finally {
+    rmSync(context.directory, { recursive: true, force: true })
+  }
+})
+
+test("dismiss and restore report actionable positive-integer errors", () => {
+  const context = fixture()
+  try {
+    for (const args of [["dismiss", "0", "reason"], ["restore", "abc"], ["restore", "9007199254740992"]]) {
+      const result = run(args, context.env)
+      assert.notEqual(result.status, 0)
+      assert.match(result.stderr, /finding-id must be a positive safe integer/)
+    }
+  } finally {
+    rmSync(context.directory, { recursive: true, force: true })
+  }
+})
+
+test("disposition CLI preserves storage errors and effective state", () => {
+  const context = fixture()
+  try {
+    const review = completeReview(context)
+    const finding = context.store().getRound(review.reviewId).validFindings[0]
+
+    const unknown = run(["restore", "999999"], context.env)
+    assert.notEqual(unknown.status, 0)
+    assert.match(unknown.stderr, /unknown finding 999999/)
+
+    const active = context.store().begin({ identity: context.identity, target: context.target })
+    const locked = run(["dismiss", String(finding.id), "locked"], context.env)
+    assert.notEqual(locked.status, 0)
+    assert.match(locked.stderr, /finding review has an active lock/)
+    assert.equal(context.store().getRound(review.reviewId).validFindings.some((item) => item.id === finding.id), true)
+    assert.equal(context.store().unlock(active.reviewId, active.fencingToken), true)
+
+    const newer = context.store().begin({ identity: context.identity, target: context.target })
+    completeDefault(context.store(), newer, { validFindings: [{ disposition: "valid", severity: "LOW", category: "TESTING", title: "Newer", bodyMarkdown: "Newer body", sourceAgents: ["testing"] }] })
+    const stale = run(["dismiss", String(finding.id), "stale"], context.env)
+    assert.notEqual(stale.status, 0)
+    assert.match(stale.stderr, /finding is not in the latest completed round/)
+    assert.equal(context.store().getRound(review.reviewId, review.roundId).validFindings.some((item) => item.id === finding.id), true)
+  } finally {
+    rmSync(context.directory, { recursive: true, force: true })
+  }
+})
+
+test("latest export is effective while exact historical export preserves original hashes", () => {
+  const context = fixture()
+  try {
+    const first = completeReview(context)
+    const before = context.store().getRound(first.reviewId, first.roundId)
+    const finding = before.validFindings[0]
+    const originalContentHash = finding.contentHash
+    const originalPayloadHash = before.payloadHash
+
+    const dismissed = run(["dismiss", String(finding.id), "Keep\r\nold"], context.env)
+    assert.equal(dismissed.status, 0, `${dismissed.stdout}\n${dismissed.stderr}`)
+    assert.match(run(["export", first.reviewId], context.env).stdout, /Wontfix: Keep\nold/)
+
+    const second = context.store().begin({ identity: context.identity, target: context.target })
+    completeDefault(context.store(), second, { validFindings: [{ disposition: "valid", severity: "LOW", category: "TESTING", title: "Newer", bodyMarkdown: "Newer body", sourceAgents: ["testing"] }] })
+    const latest = run(["export", first.reviewId], context.env)
+    const historical = run(["export", first.reviewId, "--round", first.roundId], context.env)
+    assert.equal(latest.status, 0)
+    assert.equal(historical.status, 0)
+    assert.match(latest.stdout, /Newer body/)
+    assert.doesNotMatch(latest.stdout, /Keep\nold/)
+    assert.match(historical.stdout, /Keep\nold/)
+
+    const after = context.store().getRound(first.reviewId, first.roundId)
+    assert.equal(after.payloadHash, originalPayloadHash)
+    assert.equal(after.validFindings.find((item) => item.id === finding.id), undefined)
+    assert.equal(after.ignoredFindings.find((item) => item.id === finding.id).contentHash, originalContentHash)
+  } finally {
+    rmSync(context.directory, { recursive: true, force: true })
+  }
+})
+
 test("packed artifact contains CLI, migration, and prompt assets", () => {
   const result = execFileSync("npm", ["pack", "--dry-run", "--json"], { encoding: "utf8" })
   const files = JSON.parse(result).at(-1).files.map((file) => file.path)
   assert.ok(files.includes("dist/cli.js"))
   assert.ok(files.includes("assets/migrations/001_initial.sql"))
+  assert.ok(files.includes("assets/migrations/004_finding_disposition_overrides.sql"))
   for (const prompt of ["mmar_orchestrator.md", "mmar_correctness.md", "mmar_codestyle.md", "mmar_testing.md", "mmar_intent.md"]) {
     assert.ok(files.includes(`assets/agents/${prompt}`))
   }
