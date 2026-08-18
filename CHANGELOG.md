@@ -1,5 +1,22 @@
 # Changelog
 
+## [v1.0.0-3](https://github.com/DanielMaly/opencode-multireview-plugin/compare/v1.0.0-2...v1.0.0-3) (2026-08-16)
+
+- Hide internal MMAR specialists [`#18`](https://github.com/DanielMaly/opencode-multireview-plugin/pull/18)
+- Use Commander for CLI parsing [`#17`](https://github.com/DanielMaly/opencode-multireview-plugin/pull/17)
+- Add selectable MMAR review lanes [`#16`](https://github.com/DanielMaly/opencode-multireview-plugin/pull/16)
+- Simplify MMAR plugin internals [`#15`](https://github.com/DanielMaly/opencode-multireview-plugin/pull/15)
+- Restore detailed MMAR agent prompts [`a729eaf`](https://github.com/DanielMaly/opencode-multireview-plugin/commit/a729eaf9f92c164c4640a6a2b842cd89c830fff2)
+- Release v1.0.0-3 [`e2daab2`](https://github.com/DanielMaly/opencode-multireview-plugin/commit/e2daab26634095e5ea7f9eb77a990fc07bae8bcd)
+- Align orchestrator permission assertion [`da6d149`](https://github.com/DanielMaly/opencode-multireview-plugin/commit/da6d1492f29a0adea08c54206a6871833d096e3b)
+
+## [v1.0.0-2](https://github.com/DanielMaly/opencode-multireview-plugin/compare/v1.0.0-1...v1.0.0-2) (2026-08-10)
+
+- Add agent-facing MMAR findings retrieval [`#14`](https://github.com/DanielMaly/opencode-multireview-plugin/pull/14)
+- Make MMAR routing and lifecycle reliable [`#13`](https://github.com/DanielMaly/opencode-multireview-plugin/pull/13)
+- Release v1.0.0-2 [`cadd64c`](https://github.com/DanielMaly/opencode-multireview-plugin/commit/cadd64c4ea106f79cf3efc04064bccf0d7f5aed7)
+- Fix outdated GH actions versions [`8a21eaa`](https://github.com/DanielMaly/opencode-multireview-plugin/commit/8a21eaabbe4a47e95c731f6a6e854f7bff49acf7)
+
 ## [v1.0.0-1](https://github.com/DanielMaly/opencode-multireview-plugin/compare/v1.0.0-0...v1.0.0-1) (2026-07-27)
 
 - Fix publishing [`1f2d942`](https://github.com/DanielMaly/opencode-multireview-plugin/commit/1f2d942c0f247260ea910fbd72b104ae8c4a98de)
