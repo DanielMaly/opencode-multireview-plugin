@@ -1,5 +1,15 @@
 # Changelog
 
+## [v1.0.0-4](https://github.com/DanielMaly/opencode-multireview-plugin/compare/v1.0.0-3...v1.0.0-4) (2026-08-18)
+
+- Expose finding disposition tool [`#22`](https://github.com/DanielMaly/opencode-multireview-plugin/pull/22)
+- Simplify storage workflows [`#23`](https://github.com/DanielMaly/opencode-multireview-plugin/pull/23)
+- Persist effective finding dispositions [`#21`](https://github.com/DanielMaly/opencode-multireview-plugin/pull/21)
+- Update bundled MMAR skill guidance [`#20`](https://github.com/DanielMaly/opencode-multireview-plugin/pull/20)
+- Restore detailed MMAR agent prompts [`#19`](https://github.com/DanielMaly/opencode-multireview-plugin/pull/19)
+- Rewrite README [`c35d9c6`](https://github.com/DanielMaly/opencode-multireview-plugin/commit/c35d9c60b9bd5dfeffbd290c65c631c94670536e)
+- Release v1.0.0-4 [`deb5e2f`](https://github.com/DanielMaly/opencode-multireview-plugin/commit/deb5e2fb6461a4570ef9331eb470570b639b084f)
+
 ## [v1.0.0-3](https://github.com/DanielMaly/opencode-multireview-plugin/compare/v1.0.0-2...v1.0.0-3) (2026-08-16)
 
 - Hide internal MMAR specialists [`#18`](https://github.com/DanielMaly/opencode-multireview-plugin/pull/18)
