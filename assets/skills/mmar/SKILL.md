@@ -77,6 +77,10 @@ opencode-multireview unlock <review-id>
 
 Use `--force` only with explicit user confirmation in a non-interactive environment. Never unlock speculatively.
 
+## Apply an explicit disposition
+
+When the user explicitly asks to dismiss or restore a finding, use `mmar_set_finding_disposition` with the finding ID from retrieval. Do not start a new review round for this user decision. Dismissals require a concise non-empty reason; restorations do not accept one. The tool changes only the latest completed round and is unavailable while that review has an active lock.
+
 ## Retrieve prior reviews
 
 Historical retrieval does not require a new MMAR round or delegation to `mmar_orchestrator`.
@@ -95,4 +99,3 @@ opencode-multireview export <review-id> [--round <round-id>] [--output <path>]
 ```
 
 SQLite history and plugin tools are the canonical persistence layer. 
-

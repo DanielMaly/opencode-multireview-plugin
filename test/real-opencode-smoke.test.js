@@ -195,6 +195,7 @@ test("real OpenCode loads the local plugin alongside legacy agents and enforces 
     // SQLite state in this temporary fixture.
     const databasePath = join(fixture, "plugin-state", "reviews.sqlite")
     const tools = createMmarTools({ databasePath })
+    assert.equal(typeof tools.mmar_set_finding_disposition, "object")
     const hooks = new ReviewLifecycleHooks(new PersistentReviewLifecycle({ databasePath }), () => {})
     const sessionID = "smoke-session"
     const task = { tool: "task", sessionID, callID: "smoke-call" }
@@ -222,6 +223,10 @@ test("real OpenCode loads the local plugin alongside legacy agents and enforces 
     const store = new ReviewStore({ databasePath })
     assert.deepEqual(store.listRounds(begun.reviewId).map(({ id }) => id), [begun.roundId])
     assert.equal(store.inspectLock(begun.reviewId), undefined)
+    const smokeFinding = store.getRound(begun.reviewId).validFindings[0]
+    const disposition = parseToolOutput(await tools.mmar_set_finding_disposition.execute({ findingId: smokeFinding.id, disposition: "ignored", reason: "Smoke disposition" }, toolContext(project, "mmar_orchestrator", "disposition-session")))
+    assert.equal(disposition.disposition, "ignored")
+    assert.equal(store.getRound(begun.reviewId).ignoredFindings[0].wontfix, "Smoke disposition")
     assert.throws(() => hooks.beforeTool(task, { subagent_type: "mmar_correctness" }), /active review lock/)
     assert.equal(existsSync(join(project, "REVIEW_FINDINGS.md")), false)
   } finally {

@@ -5,7 +5,7 @@ import { canonicalPath, normalizeTarget, resolveExplicitGitWorktree, resolveRepo
 import { intentTypes, LEGACY_SESSION_ID } from "./review.js"
 import type { DatabaseOptions } from "./storage/database.js"
 import type { ReviewStore } from "./storage/reviews.js"
-import { normalizeLanes } from "./lanes.js"
+import { laneForCanonicalSpecialist, normalizeLanes } from "./lanes.js"
 
 const z = tool.schema
 
@@ -78,6 +78,12 @@ const getFindingsArgsSchema = z.object({
   worktreePath: z.string().trim().min(1).optional(),
 }).strict()
 
+const setFindingDispositionArgsSchema = z.object({
+  findingId: z.number().int().positive(),
+  disposition: z.enum(findingDispositions),
+  reason: z.string().optional(),
+}).strict()
+
 function contextWorktree(context: ToolContext): string {
   validateToolContext(context)
   const directory = context.directory.trim()
@@ -90,8 +96,13 @@ function contextWorktree(context: ToolContext): string {
 }
 
 function validateToolContext(context: ToolContext): void {
+  const agent = context.agent
   const directory = context.directory.trim()
   const worktree = context.worktree.trim()
+  const isMissingAgent = typeof agent !== "string" || agent.length === 0
+  const isPaddedAgent = typeof agent === "string" && agent.trim() !== agent
+  const hasInvalidAgent = isMissingAgent || isPaddedAgent
+  if (hasInvalidAgent) throw new Error("MMAR tool context must include an unpadded agent identity")
   if (!directory || !worktree) throw new Error("MMAR tool context must include directory and worktree")
   const sessionID = context.sessionID?.trim()
   if (!sessionID || sessionID === LEGACY_SESSION_ID) throw new Error("MMAR tool context must include a valid sessionID")
@@ -100,6 +111,12 @@ function validateToolContext(context: ToolContext): void {
 function trustedWriteRepository(context: ToolContext): string {
   if (context.agent !== "mmar_orchestrator") throw new Error("MMAR write tools are available only to mmar_orchestrator")
   return contextWorktree(context)
+}
+
+function authorizeDispositionRepository(context: ToolContext): RepositoryIdentity {
+  validateToolContext(context)
+  if (laneForCanonicalSpecialist(context.agent)) throw new Error("MMAR finding disposition is unavailable to canonical specialists")
+  return resolveRepositoryIdentity(contextWorktree(context))
 }
 
 function readRepository(context: ToolContext, worktreePath: string | undefined): RepositoryIdentity {
@@ -202,11 +219,23 @@ export function createMmarTools(databaseOptions: DatabaseOptions = {}): Record<s
     },
   })
 
+  const setFindingDisposition = tool({
+    description: "Set a finding disposition after an explicit user request without starting a review round. Normal agents and mmar_orchestrator may use this tool with a valid context and session. The tool uses the trusted current worktree. Canonical specialists cannot use it. Set `ignored` with a non-empty reason. Set `valid` without a reason.",
+    args: setFindingDispositionArgsSchema.shape,
+    async execute(args, context) {
+      const input = setFindingDispositionArgsSchema.parse(args)
+      const repository = authorizeDispositionRepository(context)
+      const result = (await getStore()).setFindingDisposition({ ...input, scope: repository })
+      return json(result)
+    },
+  })
+
   return {
     mmar_begin: begin,
     mmar_complete: complete,
     mmar_list_reviews: listReviews,
     mmar_get_findings: getFindings,
+    mmar_set_finding_disposition: setFindingDisposition,
   }
 }
 

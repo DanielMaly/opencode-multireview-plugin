@@ -86,7 +86,6 @@ type FindingBlockRow = {
   finding_id: number
   uncertainty_id: number
 }
-
 type EffectiveFindingState = {
   disposition: FindingDisposition
   wontfix?: string
