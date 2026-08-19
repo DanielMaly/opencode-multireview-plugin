@@ -18,6 +18,8 @@ Multi-model adversarial code review (MMAR) for OpenCode. One review sends your c
 npm install opencode-multireview-plugin
 ```
 
+This is a local install, so run maintenance commands with `npx opencode-multireview`. Registering the plugin with OpenCode does not add the command to your shell's `PATH`. If you prefer to run `opencode-multireview` directly, install the package globally with `npm install --global opencode-multireview-plugin`.
+
 Then register the plugin in your OpenCode configuration if it is not already loaded, and restart OpenCode:
 
 ```json
@@ -33,8 +35,8 @@ Plugin registration is required for reviews: it supplies the orchestrator agents
 These commands copy the standalone workflow instructions for discovery outside plugin-loaded skills. A copied `SKILL.md` cannot execute MMAR by itself, but an agent with shell permission can use it to run CLI maintenance commands such as export and unlock. The plugin must still be registered to perform reviews:
 
 ```bash
-opencode-multireview skill install --global   # ~/.config/opencode/skills/mmar/SKILL.md
-opencode-multireview skill install --project  # <project>/.opencode/skills/mmar/SKILL.md
+npx opencode-multireview skill install --global   # ~/.config/opencode/skills/mmar/SKILL.md
+npx opencode-multireview skill install --project  # <project>/.opencode/skills/mmar/SKILL.md
 ```
 
 `XDG_CONFIG_HOME` is respected for global installs.
@@ -75,7 +77,7 @@ For example, include the path alongside the normal tool payload:
 Only one review can be active per scope. If a review is already running you will be told which one and when it started, rather than getting a second review racing the first. If a review breaks mid-flight, inspect the lock and release it:
 
 ```bash
-opencode-multireview unlock <review-id>
+npx opencode-multireview unlock <review-id>
 ```
 
 Locks never expire on their own, and fencing stops an abandoned run from writing results after you have recovered. Use `--force` only when you are sure, and only in a non-interactive environment.
@@ -87,9 +89,9 @@ Any agent can read history directly with the `mmar_list_reviews` and `mmar_get_f
 For a human-readable Markdown version, use the CLI:
 
 ```bash
-opencode-multireview list [--all-projects] [--json]
-opencode-multireview export <review-id> [--round <round-id>] [--output <path>]
-opencode-multireview unlock <review-id> [--force]
+npx opencode-multireview list [--all-projects] [--json]
+npx opencode-multireview export <review-id> [--round <round-id>] [--output <path>]
+npx opencode-multireview unlock <review-id> [--force]
 ```
 
 Exports are deterministic and can target the latest round or any earlier one. Rounds are immutable, so an old export stays reproducible. `--output` writes atomically.
