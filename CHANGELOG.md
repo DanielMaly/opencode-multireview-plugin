@@ -1,5 +1,10 @@
 # Changelog
 
+## [v1.0.0](https://github.com/DanielMaly/opencode-multireview-plugin/compare/v1.0.0-4...v1.0.0) (2026-08-18)
+
+- Support direct human invocation of mmar_orchestrator without an envelope [`1041591`](https://github.com/DanielMaly/opencode-multireview-plugin/commit/104159178925a970b3f1ba9e189c9802ad15a4e9)
+- Release v1.0.0 [`65ecd94`](https://github.com/DanielMaly/opencode-multireview-plugin/commit/65ecd9468517ffcb1074658b423b115e235cd3b4)
+
 ## [v1.0.0-4](https://github.com/DanielMaly/opencode-multireview-plugin/compare/v1.0.0-3...v1.0.0-4) (2026-08-18)
 
 - Expose finding disposition tool [`#22`](https://github.com/DanielMaly/opencode-multireview-plugin/pull/22)

@@ -1,6 +1,6 @@
 {
   "name": "opencode-multireview-plugin",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "OpenCode plugin bundling MMAR review agents and history tools.",
   "type": "module",
   "engines": {
