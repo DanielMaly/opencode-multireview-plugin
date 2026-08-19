@@ -35,8 +35,7 @@
     "test": "node --test test/*.test.js",
     "release": "release-it",
     "release:dry-run": "release-it --dry-run",
-    "prepack": "npm run build",
-    "postinstall": "node scripts/postinstall.cjs"
+    "prepack": "npm run build"
   },
   "dependencies": {
     "@opencode-ai/plugin": "^1.14.20",

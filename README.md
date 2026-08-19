@@ -26,11 +26,11 @@ Then register the plugin in your OpenCode configuration if it is not already loa
 }
 ```
 
-That is all. The plugin registers its agents and the `mmar` skill directly with OpenCode — no manual skill copying needed.
+Plugin registration is required for reviews: it supplies the orchestrator agents and MMAR tools, and registers the `mmar` skill directly with OpenCode. No manual skill copying is needed when the plugin is loaded.
 
 ### Standalone skill install (optional)
 
-You only need this to run the skill without the plugin loaded, or to repair a broken copy:
+These commands copy the standalone workflow instructions for discovery outside plugin-loaded skills. A copied `SKILL.md` cannot execute MMAR by itself, but an agent with shell permission can use it to run CLI maintenance commands such as export and unlock. The plugin must still be registered to perform reviews:
 
 ```bash
 opencode-multireview skill install --global   # ~/.config/opencode/skills/mmar/SKILL.md
