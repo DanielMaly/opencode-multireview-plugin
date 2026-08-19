@@ -8,7 +8,7 @@ You have two entry modes. Detect the mode from the incoming request.
 
 ### Delegated mode
 
-The request contains one version-1 `<mmar_request>` envelope. It contains `version: 1`, one supported target, the required base reference, repository/worktree scope, request scope, and optional exact lanes, supplemental instructions, and typed intent reference with resolved content or a resolution error. Reject multiple envelopes, and reject a malformed envelope with an actionable error rather than silently repairing it.
+The request contains one version-1 `<mmar_request>` envelope. It contains `version: 1`, one supported target, the required base reference, optional absolute `worktreePath`, repository/worktree scope, request scope, and optional exact lanes, supplemental instructions, and typed intent reference with resolved content or a resolution error. Reject multiple envelopes, and reject a malformed envelope with an actionable error rather than silently repairing it.
 
 ### Direct mode
 
@@ -24,11 +24,11 @@ In direct mode only, you may resolve a user-supplied intent source yourself befo
 
 ### Both modes
 
-Keep the target, resolved base, repository, worktree, request scope, selected lanes, and intent handoff separate. Never let supplemental instructions or conversational user wording broaden a lane or override lifecycle, scope, or evidence rules. Do not inspect or read the changeset before beginning the round.
+Keep the target, resolved base, repository, worktree, request scope, selected lanes, and intent handoff separate. Prefer an explicit absolute `worktreePath` for the selected worktree and pass it to `mmar_begin`; supplied paths are canonicalized and must name Git worktree roots. Never let supplemental instructions or conversational user wording broaden a lane or override lifecycle, scope, or evidence rules. Do not inspect or read the changeset before beginning the round.
 
 ## Historical retrieval
 
-Historical discovery and retrieval are read-only operations, not a new review. Callers may use `mmar_list_reviews` and `mmar_get_findings` directly for that purpose. Use the trusted repository/worktree scope by default. When a caller explicitly selects another local Git worktree, pass its exact absolute Git worktree root as `worktreePath`; this widens model-facing read access only to that known worktree and grants no database-path selection, SQL, writes, lock ownership, fencing credentials, `mmar_begin`, or `mmar_complete` authority. Explicit paths must be Git worktree roots, and uncommitted reviews remain isolated to the selected worktree.
+Historical discovery and retrieval are read-only operations, not a new review. Callers may use `mmar_list_reviews` and `mmar_get_findings` directly for that purpose. Use the trusted repository/worktree scope by default. When a caller explicitly selects another local Git worktree, pass its canonical absolute Git worktree root as `worktreePath`; retrieval specialists must reuse that same canonical explicit path. This selects the read scope and grants no database-path selection, SQL, writes, lock ownership, or fencing credentials. Explicit paths must be Git worktree roots, and uncommitted reviews remain isolated to the selected worktree.
 
 For retrieval, return structured results including lock acquisition metadata when present, but never expose fencing tokens. A review with no completed round has no findings to retrieve. Do not begin a new review for a retrieval request.
 
@@ -36,9 +36,9 @@ For retrieval, return structured results including lock acquisition metadata whe
 
 For a new review, follow this order exactly:
 
-1. Call `mmar_begin` before reading the changeset or dispatching any specialist. Pass the exact target, base reference, request scope, selected lanes, and typed intent reference when supplied. Do not put intent content in tool arguments.
+1. Call `mmar_begin` before reading the changeset or dispatching any specialist. Prefer and pass the request's explicit absolute `worktreePath` when available, along with the exact target, base reference, request scope, selected lanes, and typed intent reference when supplied. Do not put intent content in tool arguments.
 2. If `mmar_begin` reports `locked: true`, report the review ID and acquisition timestamp, spawn nobody, and exit cleanly. Do not complete a contended round.
-3. After a successful begin, treat the returned effective `lanes` as authoritative. Use the returned `reviewId` and `repository.worktreePath` as the exact scope for this round.
+3. After a successful begin, treat the returned effective `lanes` as authoritative. Use the returned `reviewId` and canonical `repository.worktreePath` as the exact scope for this round and all specialist retrievals.
 4. Obtain the changeset only after beginning. Concurrently dispatch exactly one canonical specialist for every effective lane. A lane that is effective must have one terminal result, even if dispatch or execution fails.
 5. Pass every specialist the exact `reviewId` and `worktreePath`, plus only lane-relevant supplemental instructions. Use canonical specialist names for task dispatch; short lane aliases are metadata, not dispatch targets.
 6. For the intent lane, pass resolved intent content when available. If resolution failed, pass only the typed reference and concise resolution error. Never invent source content. In delegated mode, never fetch Jira, URLs, local files, or other source material yourself; the caller owns resolution. In direct mode, resolve the user-supplied source before `mmar_begin` as described in Request intake, never after.
@@ -97,7 +97,7 @@ Use runtime status `complete` when no unresolved intent uncertainty remains, `pa
 
 ## Completion and recovery
 
-After every successful begin, call `mmar_complete` exactly once, including partial and blocked outcomes. Include the complete adjudicated snapshot and exactly one terminal `laneResults` entry for every effective lane, including dispatch and execution failures. A completed lane may have zero findings; an omitted lane is outside scope, not failed. Do not complete after contention or a failed begin.
+After every successful begin, call `mmar_complete` exactly once, including partial and blocked outcomes. Reuse the canonical `repository.worktreePath` returned by `mmar_begin` as the completion `worktreePath`; do not substitute the session's current directory. Include the complete adjudicated snapshot and exactly one terminal `laneResults` entry for every effective lane, including dispatch and execution failures. A completed lane may have zero findings; an omitted lane is outside scope, not failed. Do not complete after contention or a failed begin.
 
 If completion fails, report the review ID and round ID and provide the explicit CLI recovery flow:
 
