@@ -12,10 +12,11 @@ Do not dispatch hidden lane specialists directly. Do not create or update a repo
 ## Prepare the request
 
 1. Normalize the requested changeset as one supported target: pull request, branch, commit, uncommitted worktree, or explicit custom changeset.
-2. Require a Git-resolvable base ref. Stop with an actionable error if it cannot be resolved.
-3. Summarize the requested review as a compact `requestScope`. Do not embed the full diff as metadata.
-4. Choose lanes only when the user requests a narrower review, or when the scope of the change is small enough that a swarm of reviewer agents does not make sense.
-5. Resolve optional intent before delegation.
+2. Resolve the target's absolute Git worktree root when possible and prefer carrying it as `worktreePath` in the request. An explicit path may refer to a worktree outside the current session directory; it is canonicalized by the tool and must name a Git worktree root.
+3. Require a Git-resolvable base ref. Stop with an actionable error if it cannot be resolved.
+4. Summarize the requested review as a compact `requestScope`. Do not embed the full diff as metadata.
+5. Choose lanes only when the user requests a narrower review, or when the scope of the change is small enough that a swarm of reviewer agents does not make sense.
+6. Resolve optional intent before delegation.
 
 Supported lanes are:
 
@@ -46,6 +47,7 @@ Construct one versioned request envelope and send it to `mmar_orchestrator` in a
   "version": 1,
   "target": { ... },
   "baseRef": "main",
+  "worktreePath": "/absolute/path/to/worktree",
   "requestScope": "Review lock expiry handling",
   "lanes": ["correctness"],
   "instructions": "Pay particular attention to stale-lock recovery."
@@ -79,7 +81,7 @@ Use `--force` only with explicit user confirmation in a non-interactive environm
 
 ## Apply an explicit disposition
 
-When the user explicitly asks to dismiss or restore a finding, use `mmar_set_finding_disposition` with the finding ID from retrieval. Do not start a new review round for this user decision. Dismissals require a concise non-empty reason; restorations do not accept one. The tool changes only the latest completed round and is unavailable while that review has an active lock.
+When the user explicitly asks to dismiss or restore a finding, use `mmar_set_finding_disposition` with the finding ID from retrieval and, when operating on an explicit worktree, its canonical `worktreePath`. Do not start a new review round for this user decision. Dismissals require a concise non-empty reason; restorations do not accept one. The tool changes only the latest completed round and is unavailable while that review has an active lock.
 
 ## Retrieve prior reviews
 
@@ -87,8 +89,9 @@ Historical retrieval does not require a new MMAR round or delegation to `mmar_or
 
 - Use `mmar_list_reviews` to discover prior reviews.
 - Use `mmar_get_findings` to retrieve a completed round.
-- Omit `worktreePath` for the current session worktree.
-- For another local worktree, pass its exact absolute Git worktree root.
+- Prefer the canonical explicit `worktreePath` for the selected worktree, including when a specialist is retrieving findings during an active review.
+- Omit `worktreePath` only when intentionally using the current session worktree.
+- Any supplied path must be absolute and name a Git worktree root after canonicalization.
 
 Explicit non-Git paths are unsupported. Uncommitted reviews remain isolated to the exact selected worktree. Historical tools are read-only and expose no database path, SQL, lock ownership, or fencing credentials.
 

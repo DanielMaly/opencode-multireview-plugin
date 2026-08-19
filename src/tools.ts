@@ -51,6 +51,7 @@ const beginArgsSchema = z.object({
   requestScope: z.string().trim().min(1),
   intent: intentSchema.nullable().optional(),
   lanes: z.array(z.string()).optional(),
+  worktreePath: z.string().trim().min(1).optional(),
 }).strict()
 
 const completeArgsSchema = z.object({
@@ -66,6 +67,7 @@ const completeArgsSchema = z.object({
   validFindings: z.array(findingSchema).optional(),
   ignoredFindings: z.array(findingSchema).optional(),
   uncertainties: z.array(uncertaintySchema).optional(),
+  worktreePath: z.string().trim().min(1).optional(),
 }).strict()
 
 const listReviewsArgsSchema = z.object({
@@ -82,6 +84,7 @@ const setFindingDispositionArgsSchema = z.object({
   findingId: z.number().int().positive(),
   disposition: z.enum(findingDispositions),
   reason: z.string().optional(),
+  worktreePath: z.string().trim().min(1).optional(),
 }).strict()
 
 function contextWorktree(context: ToolContext): string {
@@ -108,14 +111,17 @@ function validateToolContext(context: ToolContext): void {
   if (!sessionID || sessionID === LEGACY_SESSION_ID) throw new Error("MMAR tool context must include a valid sessionID")
 }
 
-function trustedWriteRepository(context: ToolContext): string {
+function trustedWriteRepository(context: ToolContext, worktreePath: string | undefined): string {
   if (context.agent !== "mmar_orchestrator") throw new Error("MMAR write tools are available only to mmar_orchestrator")
+  validateToolContext(context)
+  if (worktreePath !== undefined) return resolveExplicitGitWorktree(worktreePath).worktreePath
   return contextWorktree(context)
 }
 
-function authorizeDispositionRepository(context: ToolContext): RepositoryIdentity {
+function authorizeDispositionRepository(context: ToolContext, worktreePath: string | undefined): RepositoryIdentity {
   validateToolContext(context)
   if (laneForCanonicalSpecialist(context.agent)) throw new Error("MMAR finding disposition is unavailable to canonical specialists")
+  if (worktreePath !== undefined) return resolveExplicitGitWorktree(worktreePath)
   return resolveRepositoryIdentity(contextWorktree(context))
 }
 
@@ -143,11 +149,11 @@ export function createMmarTools(databaseOptions: DatabaseOptions = {}): Record<s
   }
 
   const begin = tool({
-    description: "Begin a fenced MMAR review round for the trusted current worktree, selecting exact review lanes and returning the effective lanes.",
+    description: "Begin a fenced MMAR review round for the current worktree or an explicit absolute local Git worktree root, selecting exact review lanes and returning the effective lanes.",
     args: beginArgsSchema.shape,
     async execute(args, context) {
       const input = beginArgsSchema.parse(args)
-      const worktree = trustedWriteRepository(context)
+      const worktree = trustedWriteRepository(context, input.worktreePath)
       const identity = resolveReviewIdentity(worktree, input.baseRef)
       const target = normalizeTarget(input.target as TargetInput, identity)
       const lanes = normalizeLanes(input.lanes, input.intent !== undefined && input.intent !== null)
@@ -169,11 +175,11 @@ export function createMmarTools(databaseOptions: DatabaseOptions = {}): Record<s
   })
 
   const complete = tool({
-    description: "Complete one MMAR review round with its fenced structured snapshot and exactly one terminal lane outcome for every effective lane.",
+    description: "Complete one MMAR review round in the current worktree or an explicit absolute local Git worktree root, with its fenced structured snapshot and exactly one terminal lane outcome for every effective lane.",
     args: completeArgsSchema.shape,
     async execute(args, context) {
       const input = completeArgsSchema.parse(args)
-      const worktree = trustedWriteRepository(context)
+      const worktree = trustedWriteRepository(context, input.worktreePath)
       const repository = resolveRepositoryIdentity(worktree)
       const reviewStore = await getStore()
       reviewStore.assertReviewScope(input.reviewId, repository)
@@ -220,11 +226,11 @@ export function createMmarTools(databaseOptions: DatabaseOptions = {}): Record<s
   })
 
   const setFindingDisposition = tool({
-    description: "Set a finding disposition after an explicit user request without starting a review round. Normal agents and mmar_orchestrator may use this tool with a valid context and session. The tool uses the trusted current worktree. Canonical specialists cannot use it. Set `ignored` with a non-empty reason. Set `valid` without a reason.",
+    description: "Set a finding disposition after an explicit user request without starting a review round. Normal agents and mmar_orchestrator may use this tool with a valid context and session. The tool uses the current worktree or an explicit absolute local Git worktree root. Canonical specialists cannot use it. Set `ignored` with a non-empty reason. Set `valid` without a reason.",
     args: setFindingDispositionArgsSchema.shape,
     async execute(args, context) {
       const input = setFindingDispositionArgsSchema.parse(args)
-      const repository = authorizeDispositionRepository(context)
+      const repository = authorizeDispositionRepository(context, input.worktreePath)
       const result = (await getStore()).setFindingDisposition({ ...input, scope: repository })
       return json(result)
     },

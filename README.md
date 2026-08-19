@@ -61,6 +61,17 @@ Answer any clarification questions and run another round on the same scope to re
 
 A review is identified by project, normalized target, and resolved base commit. Change the target or the base and you get a fresh review; findings never leak between unrelated scopes.
 
+`mmar_begin`, `mmar_complete`, and `mmar_set_finding_disposition` accept an optional absolute `worktreePath`. When supplied, the path is canonicalized and must name a Git worktree root, so a session in any directory can operate on that worktree. Omitting it preserves the current-worktree behavior. Reuse the canonical `repository.worktreePath` returned by `mmar_begin` for completion and subsequent tool calls.
+
+For example, include the path alongside the normal tool payload:
+
+```json
+{
+  "worktreePath": "/absolute/path/to/worktree",
+  "requestScope": "Review the read processing change"
+}
+```
+
 Only one review can be active per scope. If a review is already running you will be told which one and when it started, rather than getting a second review racing the first. If a review breaks mid-flight, inspect the lock and release it:
 
 ```bash
@@ -71,7 +82,7 @@ Locks never expire on their own, and fencing stops an abandoned run from writing
 
 ## Working with past reviews
 
-Any agent can read history directly with the `mmar_list_reviews` and `mmar_get_findings` tools — no new review round required. Both default to the current worktree; pass an absolute Git worktree root to read another one. These tools are read-only: no database paths, no SQL, no writes, no lock ownership.
+Any agent can read history directly with the `mmar_list_reviews` and `mmar_get_findings` tools — no new review round required. Both default to the current worktree; pass the canonical absolute Git worktree root to read another one. These tools are read-only: no database paths, no SQL, no writes, no lock ownership.
 
 For a human-readable Markdown version, use the CLI:
 
@@ -88,6 +99,8 @@ Agents never touch `REVIEW_FINDINGS.md` or any other Markdown findings file. SQL
 ### Dismissing findings
 
 Ask to dismiss a finding and the plugin records the decision against the latest completed round, with the reason you gave. It does not rewrite history — the original finding and its hash are preserved, and the dismissal is stored as an override on top. Later rounds re-check dismissed findings against the current code: if your reason still holds, the finding stays dismissed; if the code has moved on, it comes back for fresh adjudication.
+
+For an explicit disposition, pass the finding ID, disposition, and (for `ignored`) a non-empty reason. Include the canonical `worktreePath` when operating outside the current worktree.
 
 ## Storage and configuration
 
