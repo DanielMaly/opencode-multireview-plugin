@@ -47,6 +47,17 @@ Each installed copy gets a `.provenance.json` sidecar recording package name, ve
 
 Ask for a review in OpenCode ("run MMAR on this branch", "multireview this PR") and the `mmar` skill takes over. It works out what you want reviewed, resolves the base ref, and hands a single request to the `mmar_orchestrator` agent.
 
+OpenCode's default [`subagent_depth`](https://opencode.ai/docs/config/#subagent-depth) is `1`. To let another agent invoke `mmar_orchestrator`, which then launches the specialist agents, set the depth to `2` in your OpenCode configuration:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "subagent_depth": 2
+}
+```
+
+Alternatively, use `mmar_orchestrator` directly as the primary agent. It can launch the specialists with the default depth of `1`.
+
 You can review a **pull request, branch, commit, uncommitted worktree, or custom changeset**. A resolvable base ref is required; without one the review stops with an error rather than guessing.
 
 By default three lanes run: correctness, code style, and testing. Add an intent reference — a Jira key, a ticket URL, or a local file path — and a fourth lane checks the change against what was actually asked for. You can also pick lanes explicitly for a narrower review.
