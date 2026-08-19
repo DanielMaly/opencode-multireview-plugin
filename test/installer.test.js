@@ -7,10 +7,8 @@ import { pathToFileURL } from "node:url"
 import test from "node:test"
 import { contentSha256, installSkill, provenancePathFor } from "../dist/installer.js"
 import { globalSkillPath, projectSkillPath, skillPath } from "../dist/paths.js"
-import { runPostinstall } from "../dist/postinstall.js"
 
 const cli = new URL("../dist/cli.js", import.meta.url)
-const postinstall = new URL("../dist/postinstall.js", import.meta.url)
 
 function temporaryDirectory() {
   return mkdtempSync(join(tmpdir(), "opencode-multireview-installer-"))
@@ -111,51 +109,6 @@ test("CLI entry point runs from a path containing URL-encoded characters", () =>
   }
 })
 
-test("noninteractive postinstall skips mutation and prints manual guidance", () => {
-  const directory = temporaryDirectory()
-  const result = spawnSync(process.execPath, [postinstall.pathname], {
-    cwd: directory,
-    env: { ...process.env, HOME: directory, XDG_CONFIG_HOME: join(directory, "xdg") },
-    encoding: "utf8",
-  })
-  assert.equal(result.status, 0)
-  assert.match(result.stdout, /non-interactive/)
-  assert.match(result.stdout, /opencode-multireview skill install --global/)
-  assert.equal(existsSync(join(directory, "xdg", "opencode")), false)
-  rmSync(directory, { recursive: true, force: true })
-})
-
-test("TTY postinstall requires explicit opt-in and skips by default", async () => {
-  const directory = temporaryDirectory()
-  try {
-    let installed = false
-    await runPostinstall({ isTTY: true, ask: async () => "", install: () => { installed = true } })
-    assert.equal(installed, false)
-
-    const messages = []
-    await runPostinstall({ isTTY: true, ask: async () => "y", install: () => { installed = true }, write: (message) => messages.push(message) })
-    assert.equal(installed, true)
-    assert.equal(messages.length, 0)
-
-    await runPostinstall({ isTTY: true, ask: async () => "n", install: () => { throw new Error("must not install") }, write: (message) => messages.push(message) })
-    assert.match(messages.join(""), /installation skipped/)
-  } finally {
-    rmSync(directory, { recursive: true, force: true })
-  }
-})
-
-test("TTY postinstall degrades installer failures to successful manual guidance", async () => {
-  const directory = temporaryDirectory()
-  try {
-    const messages = []
-    await runPostinstall({ isTTY: true, ask: async () => "y", install: () => { throw new Error("installation failed") }, write: (message) => messages.push(message) })
-    assert.match(messages.join(""), /could not be completed/)
-    assert.match(messages.join(""), /opencode-multireview skill install --global/)
-  } finally {
-    rmSync(directory, { recursive: true, force: true })
-  }
-})
-
 test("provenance is committed before content so a content-write failure cannot create new content with stale ownership", () => {
   const directory = temporaryDirectory()
   const previousXdg = process.env.XDG_CONFIG_HOME
@@ -214,9 +167,7 @@ test("packed artifact contains the installed skill and installer inputs", () => 
   const result = execFileSync("npm", ["pack", "--dry-run", "--json"], { encoding: "utf8" })
   const files = JSON.parse(result).at(-1).files.map((file) => file.path)
   assert.ok(files.includes("assets/skills/mmar/SKILL.md"))
-  assert.ok(files.includes("scripts/postinstall.cjs"))
   assert.ok(files.includes("dist/installer.js"))
-  assert.ok(files.includes("dist/postinstall.js"))
 })
 
 test("packed artifact declares its runtime plugin dependency", () => {
