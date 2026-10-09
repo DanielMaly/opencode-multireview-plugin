@@ -49,7 +49,7 @@ function validFinding(title = "Tool finding") {
 }
 
 function parse(output) {
-  return JSON.parse(output);
+  return JSON.parse(typeof output === "string" ? output : output.content);
 }
 
 async function completeTool(tools, args, context) {
@@ -62,14 +62,15 @@ async function completeTool(tools, args, context) {
 
 test("exposes the tool registry without model-controlled database or session arguments", () => {
   assert.deepEqual(Object.keys(mmarTools).sort(), ["mmar_begin", "mmar_complete", "mmar_get_findings", "mmar_list_reviews", "mmar_set_finding_disposition"]);
-  assert.deepEqual(Object.keys(mmarTools.mmar_begin.args).sort(), ["baseRef", "intent", "lanes", "requestScope", "target", "worktreePath"]);
-  assert.deepEqual(Object.keys(mmarTools.mmar_complete.args).sort(), [
+  const properties = (tool) => Object.keys(tool.input.properties);
+  assert.deepEqual(properties(mmarTools.mmar_begin).sort(), ["baseRef", "intent", "lanes", "requestScope", "target", "worktreePath"]);
+  assert.deepEqual(properties(mmarTools.mmar_complete).sort(), [
     "fencingToken", "ignoredFindings", "intent", "laneResults", "reviewId", "roundId", "uncertainties", "validFindings", "worktreePath",
   ]);
-  assert.deepEqual(Object.keys(mmarTools.mmar_list_reviews.args), ["worktreePath"]);
-  assert.deepEqual(Object.keys(mmarTools.mmar_get_findings.args).sort(), ["reviewId", "roundId", "worktreePath"]);
-  assert.deepEqual(Object.keys(mmarTools.mmar_set_finding_disposition.args).sort(), ["disposition", "findingId", "reason", "worktreePath"]);
-  for (const args of [mmarTools.mmar_begin.args, mmarTools.mmar_complete.args, mmarTools.mmar_list_reviews.args, mmarTools.mmar_get_findings.args, mmarTools.mmar_set_finding_disposition.args]) {
+  assert.deepEqual(properties(mmarTools.mmar_list_reviews), ["worktreePath"]);
+  assert.deepEqual(properties(mmarTools.mmar_get_findings).sort(), ["reviewId", "roundId", "worktreePath"]);
+  assert.deepEqual(properties(mmarTools.mmar_set_finding_disposition).sort(), ["disposition", "findingId", "reason", "worktreePath"]);
+  for (const args of [mmarTools.mmar_begin.input.properties, mmarTools.mmar_complete.input.properties, mmarTools.mmar_list_reviews.input.properties, mmarTools.mmar_get_findings.input.properties, mmarTools.mmar_set_finding_disposition.input.properties]) {
     for (const forbidden of ["databasePath", "sql", "shell", "sessionId", "sessionID", "intentContent"]) {
       assert.equal(Object.hasOwn(args, forbidden), false);
     }

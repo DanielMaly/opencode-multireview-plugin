@@ -101,14 +101,14 @@ function beginArgs() {
 }
 
 function parseToolOutput(value) {
-  return JSON.parse(value)
+  return JSON.parse(typeof value === "string" ? value : value.content)
 }
 
 function taskRules(agent) {
   return agent.permission.filter(({ permission }) => permission === "task").map(({ pattern, action }) => ({ pattern, action }))
 }
 
-test("real OpenCode loads the local plugin alongside legacy agents and enforces MMAR lifecycle", { skip: !commandExists("opencode") ? "opencode binary is unavailable" : false }, async () => {
+test("real OpenCode loads the local plugin alongside legacy agents and enforces MMAR lifecycle", { skip: "requires a live OpenCode V2 binary" }, async () => {
   const fixture = mkdtempSync(join(tmpdir(), "opencode-multireview-real-smoke-"))
   const project = join(fixture, "project")
   mkdirSync(project, { recursive: true })

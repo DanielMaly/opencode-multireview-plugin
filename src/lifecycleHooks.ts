@@ -1,4 +1,3 @@
-import type { Event } from "@opencode-ai/sdk"
 import type { ReviewLifecycle } from "./storage/lifecycle.js"
 import { laneForCanonicalSpecialist, type LaneDefinition } from "./lanes.js"
 
@@ -14,6 +13,12 @@ export type Diagnostic = {
   sessionID: string
 }
 
+type LifecycleEvent = {
+  type: string
+  data?: unknown
+  properties?: { sessionID?: unknown }
+}
+
 export type DiagnosticSink = (diagnostic: Diagnostic) => void | Promise<void>
 
 type UnknownRecord = Record<string, unknown>
@@ -23,13 +28,16 @@ function isRecord(value: unknown): value is UnknownRecord {
 }
 
 function specialistType(args: unknown): LaneDefinition | undefined {
-  if (!isRecord(args) || typeof args.subagent_type !== "string") return undefined
-  return laneForCanonicalSpecialist(args.subagent_type)
+  if (!isRecord(args)) return undefined
+  // V2's `subagent` tool takes `agent`; V1's `task` tool took `subagent_type`.
+  const name = typeof args.agent === "string" ? args.agent : args.subagent_type
+  return typeof name === "string" ? laneForCanonicalSpecialist(name) : undefined
 }
 
-function sessionIDFromEvent(event: Event): string | undefined {
-  if (event.type !== "session.error") return undefined
-  const sessionID = event.properties.sessionID
+function sessionIDFromEvent(event: LifecycleEvent): string | undefined {
+  if (event.type !== "session.error" && event.type !== "session.execution.failed") return undefined
+  const data = event.data && typeof event.data === "object" ? event.data as { sessionID?: unknown } : undefined
+  const sessionID = data?.sessionID ?? event.properties?.sessionID
   return typeof sessionID === "string" && sessionID.trim() ? sessionID : undefined
 }
 
@@ -41,7 +49,7 @@ export class ReviewLifecycleHooks {
 
   beforeTool(input: ToolBeforeInput, args: unknown): void {
     // OpenCode invokes this before-hook with the calling session; throwing here aborts task dispatch.
-    if (input.tool !== "task") return
+    if (input.tool !== "subagent" && input.tool !== "task") return
     const specialist = specialistType(args)
     if (!specialist) return
     const activeReview = this.lifecycle.activeReviewForSession(input.sessionID)
@@ -55,13 +63,14 @@ export class ReviewLifecycleHooks {
     }
   }
 
-  async event(event: Event): Promise<void> {
-    if (event.type !== "session.error") return
+  async event(event: LifecycleEvent): Promise<void> {
+    if (event.type !== "session.error" && event.type !== "session.execution.failed") return
     const sessionID = sessionIDFromEvent(event)
     if (!sessionID) return
     const activeReview = this.lifecycle.activeReviewForSession(sessionID)
     if (!activeReview) return
-    const eventType = event.type
+    // V2 renamed session.error to session.execution.failed; retain the persisted marker for old databases.
+    const eventType = "session.error" as const
     const marker = this.lifecycle.recordIncompleteDiagnosticMarker({
       sessionID,
       reviewId: activeReview.reviewId,

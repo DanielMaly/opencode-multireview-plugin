@@ -44,7 +44,7 @@ function completeStore(store, request) {
 }
 
 function error(sessionID) {
-  return { type: "session.error", properties: sessionID === undefined ? {} : { sessionID } }
+  return { type: "session.execution.failed", data: sessionID === undefined ? {} : { sessionID } }
 }
 
 test("guards specialist dispatches by the active session lock and permits unrelated tasks", () => {
@@ -61,6 +61,9 @@ test("guards specialist dispatches by the active session lock and permits unrela
     assert.doesNotThrow(() => hooks.beforeTool(taskInput(owner), { subagent_type: "mmar_correctness" }))
     assert.throws(() => hooks.beforeTool(taskInput(contender), { subagent_type: "mmar_correctness" }), /active review lock/)
     assert.doesNotThrow(() => hooks.beforeTool(taskInput(owner), { subagent_type: "other_agent" }))
+    // V2 dispatches through the `subagent` tool with an `agent` field.
+    assert.throws(() => hooks.beforeTool({ tool: "subagent", sessionID: contender, callID: "c" }, { agent: "mmar_correctness" }), /active review lock/)
+    assert.doesNotThrow(() => hooks.beforeTool({ tool: "subagent", sessionID: owner, callID: "c" }, { agent: "mmar_correctness" }))
     assert.equal(lifecycle.activeReviewForSession(contender), undefined)
 
     completeStore(store, { reviewId: review.reviewId, roundId: review.roundId, fencingToken: review.fencingToken })

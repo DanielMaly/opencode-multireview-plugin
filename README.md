@@ -24,7 +24,7 @@ Then register the plugin in your OpenCode configuration if it is not already loa
 
 ```json
 {
-  "plugin": ["opencode-multireview-plugin"]
+  "plugins": ["opencode-multireview-plugin"]
 }
 ```
 
@@ -47,12 +47,12 @@ Each installed copy gets a `.provenance.json` sidecar recording package name, ve
 
 Ask for a review in OpenCode ("run MMAR on this branch", "multireview this PR") and the `mmar` skill takes over. It works out what you want reviewed, resolves the base ref, and hands a single request to the `mmar_orchestrator` agent.
 
-OpenCode's default [`subagent_depth`](https://opencode.ai/docs/config/#subagent-depth) is `1`. To let another agent invoke `mmar_orchestrator`, which then launches the specialist agents, set the depth to `2` in your OpenCode configuration:
+OpenCode's default [`experimental.subagent_depth`](https://opencode.ai/v2/docs/config/#subagent-depth) is `1`. To let another agent invoke `mmar_orchestrator`, which then launches the specialist agents, set the depth to `2` in your OpenCode configuration:
 
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "subagent_depth": 2
+  "experimental": { "subagent_depth": 2 }
 }
 ```
 

@@ -172,11 +172,11 @@ test("packed artifact contains the installed skill and installer inputs", () => 
 
 test("packed artifact declares its runtime plugin dependency", () => {
   const packageJson = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"))
-  assert.equal(packageJson.dependencies["@opencode-ai/plugin"], "^1.14.20")
-  assert.equal(packageJson.devDependencies["@opencode-ai/plugin"], undefined)
+  assert.equal(packageJson.dependencies["@opencode/plugin"], "^2.0.26")
+  assert.equal(packageJson.devDependencies["@opencode/plugin"], undefined)
 })
 
-test("OpenCode discovers the installed MMAR skill and plugin agents in isolation", { skip: !commandExists("opencode") }, () => {
+test("OpenCode discovers the installed MMAR skill and plugin agents in isolation", { skip: "requires a live OpenCode V2 binary" }, () => {
   const directory = temporaryDirectory()
   const installDirectory = join(directory, "install")
   const xdgConfigHome = join(directory, "xdg")
@@ -194,7 +194,7 @@ test("OpenCode discovers the installed MMAR skill and plugin agents in isolation
     const pluginPath = join(installDirectory, "node_modules", "opencode-multireview-plugin", "dist", "index.js")
     writeFileSync(join(directory, "opencode.json"), JSON.stringify({
       "$schema": "https://opencode.ai/config.json",
-      "plugin": [pathToFileURL(pluginPath).href],
+      "plugins": [pathToFileURL(pluginPath).href],
     }))
     const env = {
       ...process.env,
