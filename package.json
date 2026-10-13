@@ -40,7 +40,8 @@
   },
   "dependencies": {
     "@opencode/plugin": "^2.0.26",
-    "commander": "^15.0.0"
+    "commander": "^15.0.0",
+    "effect": "^4.0.0-rc.112"
   },
   "keywords": [
     "opencode",

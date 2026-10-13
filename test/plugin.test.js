@@ -82,9 +82,9 @@ test("setup registers V2 tools, skill, and lifecycle hooks", async () => {
   cleanup();
 });
 
-test("V2 tool definitions expose JSON schemas and structured content", () => {
+test("V2 tool definitions expose Effect schemas and structured content", () => {
   for (const definition of Object.values(mmarTools)) {
-    assert.equal(definition.input.type, "object");
+    assert.equal(typeof definition.input.fields, "object");
     assert.equal(typeof definition.execute, "function");
   }
 });
