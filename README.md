@@ -30,6 +30,10 @@ Then register the plugin in your OpenCode configuration if it is not already loa
 
 Plugin registration is required for reviews: it supplies the orchestrator agents and MMAR tools, and registers the `mmar` skill directly with OpenCode. No manual skill copying is needed when the plugin is loaded.
 
+### Versions
+
+Version 2.x requires OpenCode V2: use the `plugins` key and `experimental.subagent_depth`. For OpenCode V1, use version 1.x (`npm install opencode-multireview-plugin@1`), the `plugin` key, and `subagent_depth`. In 2.x the plugin no longer sets `subagent_depth` automatically, so set it to `2`; it also no longer denies specialist dispatch from other agents, though the review lock still guards dispatch.
+
 ### Standalone skill install (optional)
 
 These commands copy the standalone workflow instructions for discovery outside plugin-loaded skills. A copied `SKILL.md` cannot execute MMAR by itself, but an agent with shell permission can use it to run CLI maintenance commands such as export and unlock. The plugin must still be registered to perform reviews:

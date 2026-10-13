@@ -61,10 +61,15 @@ function parseSchema(value: unknown, schema: Schema, path = "input"): any {
     if (typeof value !== "string") throw new Error(`${path} must be a string`)
     if (schema.minLength !== undefined && value.trim().length < Number(schema.minLength)) throw new Error(`${path} must be non-empty`)
     if (schema.format === "uuid" && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) throw new Error(`${path} is invalid; must be a UUID`)
-    return value
+    return schema.minLength === undefined ? value : value.trim()
   }
   if (schema.type === "number" || schema.type === "integer") {
-    if (typeof value !== "number" || !Number.isFinite(value) || (schema.type === "integer" && !Number.isInteger(value)) || (schema.minimum !== undefined && value < Number(schema.minimum))) throw new Error(`${path} must be an expected number to be >0`)
+    const valid = typeof value === "number" && Number.isFinite(value) && (schema.type !== "integer" || Number.isInteger(value)) && (schema.minimum === undefined || value >= Number(schema.minimum))
+    if (!valid) {
+      const type = schema.type === "integer" ? "integer" : "number"
+      const minimum = schema.minimum === undefined ? "" : ` >= ${schema.minimum}`
+      throw new Error(`${path} must be ${type === "integer" ? "an" : "a"} ${type}${minimum}`)
+    }
     return value
   }
   if (schema.type === "array") {

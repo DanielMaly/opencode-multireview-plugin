@@ -12,11 +12,13 @@ import { laneRegistry } from "./lanes.js"
 import { REVIEWER_REGISTRY } from "./defaults.js"
 
 const pluginId = "opencode-multireview-plugin"
+type OpenCodeToolContext = Parameters<Awaited<ReturnType<Plugin.Context["tool"]["list"]>>[number]["execute"]>[1]
 
 function modelReference(model: string, variant?: string): { providerID: string; id: string; variant?: string } {
   const separator = model.indexOf("/")
-  const providerID = separator === -1 ? model : model.slice(0, separator)
-  const id = separator === -1 ? model : model.slice(separator + 1)
+  if (separator === -1) throw new Error(`Invalid model reference "${model}"; expected "provider/model"`)
+  const providerID = model.slice(0, separator)
+  const id = model.slice(separator + 1)
   return variant === undefined ? { providerID, id } : { providerID, id, variant }
 }
 
@@ -35,15 +37,19 @@ function permissions(value: unknown): Array<{ action: string; resource: string; 
   return result
 }
 
-function registerAgents(ctx: any, modelConfig: ReturnType<typeof loadMultireviewConfig>): Promise<void> {
+function toolPermissions(value: Record<string, boolean>): Array<{ action: string; resource: string; effect: "allow" | "deny" }> {
+  return Object.entries(value).map(([action, enabled]) => ({ action, resource: "*", effect: enabled ? "allow" : "deny" }))
+}
+
+function registerAgents(ctx: Plugin.Context, modelConfig: ReturnType<typeof loadMultireviewConfig>): Promise<void> {
   const bundled = buildAgents(modelConfig)
   const orchestrator = REVIEWER_REGISTRY.coordinator.name
   // V1 restricted the orchestrator's task tool to exactly the specialist agents.
   const orchestratorTasks = { "*": "deny", ...Object.fromEntries(laneRegistry.map((lane) => [lane.specialistAgent, "allow"])) }
-  return ctx.agent.transform((editor: any) => {
+  return ctx.agent.transform((editor) => {
     // V2 update() creates missing agents; config/file agents with the same id are layered on top by the host.
     for (const [id, definition] of Object.entries(bundled)) {
-      editor.update(id, (agent: any) => {
+      editor.update(id, (agent) => {
         const permission = id === orchestrator ? { ...definition.permission, task: orchestratorTasks } : definition.permission
         Object.assign(agent, {
           id,
@@ -53,7 +59,7 @@ function registerAgents(ctx: any, modelConfig: ReturnType<typeof loadMultireview
           hidden: definition.hidden === true,
           model: modelReference(definition.model, definition.variant),
           system: definition.prompt,
-          permissions: permissions(permission),
+          permissions: [...permissions(permission), ...toolPermissions(definition.tools)],
         })
       })
     }
@@ -73,7 +79,7 @@ export function createMultireviewPlugin(lifecycle: ReviewLifecycle = new Persist
         for (const definition of Object.values(mmarTools)) {
           editor.add({
             ...definition,
-            execute: (input: unknown, toolContext: any) => definition.execute(input, {
+            execute: (input: unknown, toolContext: OpenCodeToolContext) => definition.execute(input, {
               ...toolContext,
               directory: ctx.location.directory,
               worktree: ctx.location.project.directory,

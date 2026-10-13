@@ -76,6 +76,9 @@ test("setup registers V2 tools, skill, and lifecycle hooks", async () => {
   const tasks = agents.mmar_orchestrator.permissions.filter(({ action }) => action === "subagent");
   assert.deepEqual(tasks[0], { action: "subagent", resource: "*", effect: "deny" });
   assert.ok(tasks.some(({ resource, effect }) => resource === "mmar_testing" && effect === "allow"));
+  assert.deepEqual(agents.mmar_testing.permissions.find(({ action }) => action === "mmar_begin"), { action: "mmar_begin", resource: "*", effect: "deny" });
+  assert.deepEqual(agents.mmar_testing.permissions.find(({ action }) => action === "mmar_get_findings"), { action: "mmar_get_findings", resource: "*", effect: "allow" });
+  assert.deepEqual(agents.mmar_orchestrator.permissions.find(({ action }) => action === "mmar_begin"), { action: "mmar_begin", resource: "*", effect: "allow" });
   cleanup();
 });
 

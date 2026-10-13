@@ -77,6 +77,22 @@ test("exposes the tool registry without model-controlled database or session arg
   }
 });
 
+test("trims minLength string inputs before execution", async () => {
+  const project = gitProject("opencode-mmar-tool-trim-");
+  try {
+    const review = parse(await mmarTools.mmar_begin.execute({
+      target: { kind: "custom", changeset: "  review-scope  ", label: "  Review scope  " },
+      baseRef: "  HEAD  ",
+      requestScope: "  test scope  ",
+    }, context(project)));
+    assert.equal(review.requestScope, "test scope");
+    assert.equal(review.target.key, "review-scope");
+    assert.equal(review.target.label, "Review scope");
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
 test("lists scoped reviews and retrieves latest or exact completed findings without lock ownership", async () => {
   const projectA = gitProject("opencode-mmar-tool-read-a-");
   const projectB = gitProject("opencode-mmar-tool-read-b-");
@@ -593,7 +609,7 @@ test("sets finding dispositions through allowed callers and rejects specialists 
     }
     await assert.rejects(
       () => tools.mmar_set_finding_disposition.execute({ findingId: 0, disposition: "valid" }, context(project, normalAgent)),
-      /positive integer|expected number to be >0/,
+      /must be an integer >= 1/,
     );
     await assert.rejects(
       () => tools.mmar_set_finding_disposition.execute({ findingId: finding.id, disposition: "ignored" }, context(project, normalAgent)),
