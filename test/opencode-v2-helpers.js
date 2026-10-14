@@ -14,6 +14,13 @@ function versionOf(command) {
 }
 
 export function resolveOpenCodeV2() {
+  const resolved = findOpenCodeV2()
+  const required = process.env.REQUIRE_OPENCODE_V2 === "1"
+  if (required && resolved.reason) throw new Error(`REQUIRE_OPENCODE_V2 is set but ${resolved.reason}`)
+  return resolved
+}
+
+function findOpenCodeV2() {
   const configured = process.env.OPENCODE_V2_BIN
   if (configured) {
     const version = versionOf(configured)
