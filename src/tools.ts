@@ -17,6 +17,7 @@ type ToolInputSchema = Schema.Struct<Schema.Struct.Fields> & Schema.Codec<unknow
 export type ToolDefinition = {
   readonly name: string
   readonly description: string
+  readonly options: { readonly codemode: false }
   readonly input: ToolInputSchema
   readonly execute: (input: unknown, context: MmarToolContext) => Promise<{ content: string }>
 }
@@ -105,6 +106,7 @@ function defineTool<S extends Schema.Struct<Schema.Struct.Fields> & Schema.Codec
   return {
     name: definition.name,
     description: definition.description,
+    options: { codemode: false },
     input: definition.args,
     execute: async (input, context) => ({
       content: await definition.execute(decode(input), context),
