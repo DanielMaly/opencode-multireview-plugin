@@ -1,12 +1,13 @@
 import assert from "node:assert/strict"
-import { execFileSync, spawnSync } from "node:child_process"
+import { execFileSync, spawn, spawnSync } from "node:child_process"
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { tmpdir } from "node:os"
+import { createServer } from "node:net"
 import { pathToFileURL } from "node:url"
 import test from "node:test"
 import { contentSha256, installSkill, provenancePathFor } from "../dist/installer.js"
-import { globalSkillPath, projectSkillPath, skillPath } from "../dist/paths.js"
+import { globalAgentPath, globalSkillPath, projectAgentPath, projectSkillPath, skillPath } from "../dist/paths.js"
 
 const cli = new URL("../dist/cli.js", import.meta.url)
 
@@ -23,6 +24,9 @@ test("installs missing skills, updates unchanged owned copies, and preserves mod
     const first = installSkill("global", directory)
     assert.equal(first.status, "installed")
     assert.equal(readFileSync(destination, "utf8"), readFileSync(skillPath, "utf8"))
+    const agent = globalAgentPath("mmar_testing")
+    assert.match(readFileSync(agent, "utf8"), /description: MMAR agent managed by opencode-multireview-plugin/)
+    assert.equal(JSON.parse(readFileSync(provenancePathFor(agent), "utf8")).contentSha256, contentSha256(readFileSync(agent, "utf8")))
     const provenance = JSON.parse(readFileSync(provenancePathFor(destination), "utf8"))
     assert.equal(provenance.contentSha256, contentSha256(readFileSync(destination, "utf8")))
 
@@ -37,9 +41,11 @@ test("installs missing skills, updates unchanged owned copies, and preserves mod
     assert.equal(unchanged.status, "unchanged")
 
     writeFileSync(destination, "user modification\n")
+    writeFileSync(agent, "user agent modification\n")
     const preserved = installSkill("global", directory)
     assert.equal(preserved.status, "preserved")
     assert.equal(readFileSync(destination, "utf8"), "user modification\n")
+    assert.equal(readFileSync(agent, "utf8"), "user agent modification\n")
   } finally {
     if (previousXdg === undefined) delete process.env.XDG_CONFIG_HOME
     else process.env.XDG_CONFIG_HOME = previousXdg
@@ -55,6 +61,9 @@ test("uses literal OpenCode project and XDG global paths", () => {
     const project = installSkill("project", directory)
     assert.equal(project.skillPath, projectSkillPath(realpathSync(directory)))
     assert.ok(existsSync(join(directory, ".opencode", "skills", "mmar", "SKILL.md")))
+    const projectRoot = realpathSync(directory)
+    assert.equal(projectAgentPath(projectRoot, "mmar_intent"), join(projectRoot, ".opencode", "agents", "mmar_intent.md"))
+    assert.ok(existsSync(projectAgentPath(projectRoot, "mmar_intent")))
     assert.equal(globalSkillPath(), join(directory, "xdg", "opencode", "skills", "mmar", "SKILL.md"))
   } finally {
     if (previousXdg === undefined) delete process.env.XDG_CONFIG_HOME
@@ -81,11 +90,13 @@ test("CLI subprocess installs global and project skills", () => {
     assert.equal(global.status, 0, `${global.stdout}\n${global.stderr}`)
     assert.match(global.stdout, /Installed MMAR skill at/)
     assert.ok(existsSync(join(xdg, "opencode", "skills", "mmar", "SKILL.md")))
+    assert.ok(existsSync(join(xdg, "opencode", "agents", "mmar_orchestrator.md")))
 
     const project = spawnSync(process.execPath, [cli.pathname, "skill", "install", "--project"], { cwd: directory, env: environment, encoding: "utf8" })
     assert.equal(project.status, 0, `${project.stdout}\n${project.stderr}`)
     assert.match(project.stdout, /Installed MMAR skill at/)
     assert.ok(existsSync(join(directory, ".opencode", "skills", "mmar", "SKILL.md")))
+    assert.ok(existsSync(join(directory, ".opencode", "agents", "mmar_orchestrator.md")))
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }
@@ -172,14 +183,68 @@ test("packed artifact contains the installed skill and installer inputs", () => 
 
 test("packed artifact declares its runtime plugin dependency", () => {
   const packageJson = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"))
-  assert.equal(packageJson.dependencies["@opencode-ai/plugin"], "^1.14.20")
-  assert.equal(packageJson.devDependencies["@opencode-ai/plugin"], undefined)
+  assert.equal(packageJson.dependencies["@opencode/plugin"], "^2.0.26")
+  assert.equal(packageJson.devDependencies["@opencode/plugin"], undefined)
 })
 
-test("OpenCode discovers the installed MMAR skill and plugin agents in isolation", { skip: !commandExists("opencode") }, () => {
+async function reservePort() {
+  return new Promise((resolve, reject) => {
+    const server = createServer()
+    server.once("error", reject)
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address()
+      server.close((error) => error ? reject(error) : resolve(address.port))
+    })
+  })
+}
+
+function authorization(password) {
+  return `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}`
+}
+
+async function waitForServer(process, port) {
+  let output = ""
+  process.stdout.setEncoding("utf8")
+  process.stdout.on("data", (chunk) => { output += chunk })
+  const deadline = Date.now() + 20_000
+  while (Date.now() < deadline) {
+    if (process.exitCode !== null) throw new Error(`OpenCode server exited before becoming ready (exit ${process.exitCode})`)
+    const password = output.match(/server password (\S+)/)?.[1]
+    if (password) {
+      try {
+        const response = await fetch(`http://127.0.0.1:${port}/api/agent`, { headers: { authorization: authorization(password) } })
+        if (response.ok) return password
+      } catch {
+        // The server is still starting.
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  }
+  throw new Error(`OpenCode server did not become ready: ${output}`)
+}
+
+async function getJson(port, path, password) {
+  const response = await fetch(`http://127.0.0.1:${port}${path}`, { headers: { authorization: authorization(password) } })
+  assert.equal(response.ok, true, `${path} returned HTTP ${response.status}`)
+  return response.json()
+}
+
+async function waitForJson(port, path, password, predicate) {
+  const deadline = Date.now() + 20_000
+  let value
+  while (Date.now() < deadline) {
+    value = await getJson(port, path, password)
+    if (predicate(value)) return value
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  }
+  throw new Error(`Timed out waiting for ${path}: ${JSON.stringify(value)}`)
+}
+
+test("OpenCode discovers the installed MMAR skill and plugin agents in isolation", { skip: !commandExists("opencode") ? "opencode binary is unavailable" : false }, async () => {
   const directory = temporaryDirectory()
   const installDirectory = join(directory, "install")
   const xdgConfigHome = join(directory, "xdg")
+  let server
   try {
     execFileSync("git", ["init", "--quiet"], { cwd: directory })
     execFileSync("git", ["-c", "user.name=MMAR test", "-c", "user.email=mmar-test@example.invalid", "commit", "--quiet", "--allow-empty", "-m", "fixture"], { cwd: directory })
@@ -191,29 +256,51 @@ test("OpenCode discovers the installed MMAR skill and plugin agents in isolation
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
     })
-    const pluginPath = join(installDirectory, "node_modules", "opencode-multireview-plugin", "dist", "index.js")
+    // OpenCode 2.0.25 requires the matching V2 plugin/schema runtime rather
+    // than the newest compatible semver release pulled by npm.
+    execFileSync("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", "--no-save", "@opencode/plugin@2.0.26", "@opencode/schema@2.0.26"], {
+      cwd: installDirectory,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    })
+    const pluginPath = join(installDirectory, "node_modules", "opencode-multireview-plugin", "dist")
     writeFileSync(join(directory, "opencode.json"), JSON.stringify({
       "$schema": "https://opencode.ai/config.json",
-      "plugin": [pathToFileURL(pluginPath).href],
+      "plugins": [`${pathToFileURL(pluginPath).href}/`],
     }))
     const env = {
       ...process.env,
       HOME: join(directory, "home"),
       XDG_CONFIG_HOME: xdgConfigHome,
-      OPENCODE_DISABLE_DEFAULT_PLUGINS: "1",
+      XDG_DATA_HOME: join(directory, "data"),
+      XDG_STATE_HOME: join(directory, "state"),
       OPENCODE_DISABLE_EXTERNAL_SKILLS: "1",
       OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: "1",
     }
     delete env.OPENCODE_CONFIG
     delete env.OPENCODE_CONFIG_CONTENT
-    const skill = spawnSync("opencode", ["debug", "skill"], { cwd: directory, env, encoding: "utf8" })
-    assert.equal(skill.status, 0, `${skill.stdout}\n${skill.stderr}`)
-    assert.match(skill.stdout, /"name": "mmar"/)
+    for (const path of [env.HOME, env.XDG_CONFIG_HOME, env.XDG_DATA_HOME, env.XDG_STATE_HOME]) mkdirSync(path, { recursive: true })
+    const port = await reservePort()
+    server = spawn("opencode", ["serve", "--hostname", "127.0.0.1", "--port", String(port)], { cwd: directory, env, stdio: ["ignore", "pipe", "pipe"] })
+    const password = await waitForServer(server, port)
+    const skillResponse = await waitForJson(port, "/api/skill", password, ({ data }) => data.some(({ id }) => id === "mmar"))
+    const mmarSkill = skillResponse.data.find(({ id }) => id === "mmar")
+    assert.ok(mmarSkill, "V2 skill discovery did not find mmar")
 
-    const agent = spawnSync("opencode", ["debug", "agent", "mmar_orchestrator"], { cwd: directory, env, encoding: "utf8" })
-    assert.equal(agent.status, 0, `${agent.stdout}\n${agent.stderr}`)
-    assert.match(agent.stdout, /mmar_orchestrator/)
+    const agents = (await waitForJson(port, "/api/agent", password, ({ data }) => data.some(({ name }) => name === "mmar_orchestrator"))).data
+    const byName = new Map(agents.map((agent) => [agent.name, agent]))
+    const specialists = ["mmar_correctness", "mmar_codestyle", "mmar_testing", "mmar_intent"]
+    for (const name of ["mmar_orchestrator", ...specialists]) assert.ok(byName.get(name)?.system?.trim(), `missing populated ${name}`)
+    const permissions = byName.get("mmar_orchestrator").permissions.filter(({ action }) => action === "subagent")
+    assert.deepEqual(permissions, [
+      { action: "subagent", resource: "*", effect: "deny" },
+      ...specialists.map((resource) => ({ action: "subagent", resource, effect: "allow" })),
+    ])
   } finally {
+    if (server && server.exitCode === null) {
+      server.kill("SIGTERM")
+      await new Promise((resolve) => server.once("exit", resolve))
+    }
     rmSync(directory, { recursive: true, force: true })
   }
 })

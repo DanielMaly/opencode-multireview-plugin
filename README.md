@@ -24,15 +24,19 @@ Then register the plugin in your OpenCode configuration if it is not already loa
 
 ```json
 {
-  "plugin": ["opencode-multireview-plugin"]
+  "plugins": ["opencode-multireview-plugin"]
 }
 ```
 
 Plugin registration is required for reviews: it supplies the orchestrator agents and MMAR tools, and registers the `mmar` skill directly with OpenCode. No manual skill copying is needed when the plugin is loaded.
 
+### Versions
+
+Version 2.x requires OpenCode V2: use the `plugins` key and `experimental.subagent_depth`. For OpenCode V1, use version 1.x (`npm install opencode-multireview-plugin@1`), the `plugin` key, and `subagent_depth`. In 2.x the plugin no longer sets `subagent_depth` automatically, so set it to `2`; it also no longer denies specialist dispatch from other agents, though the review lock still guards dispatch.
+
 ### Standalone skill install (optional)
 
-These commands copy the standalone workflow instructions for discovery outside plugin-loaded skills. A copied `SKILL.md` cannot execute MMAR by itself, but an agent with shell permission can use it to run CLI maintenance commands such as export and unlock. The plugin must still be registered to perform reviews:
+These commands install the standalone workflow instructions and minimal agent stubs for discovery outside plugin-loaded skills. The stubs are populated with prompts and permissions when the plugin loads. A copied `SKILL.md` cannot execute MMAR by itself, but an agent with shell permission can use it to run CLI maintenance commands such as export and unlock. The plugin must still be registered to perform reviews:
 
 ```bash
 npx opencode-multireview skill install --global   # ~/.config/opencode/skills/mmar/SKILL.md
@@ -41,18 +45,18 @@ npx opencode-multireview skill install --project  # <project>/.opencode/skills/m
 
 `XDG_CONFIG_HOME` is respected for global installs.
 
-Each installed copy gets a `.provenance.json` sidecar recording package name, version, and checksum. Missing copies are created and outdated plugin-owned copies are updated. If you have edited the file, or it was not installed by this plugin, it is left alone — uninstalling never deletes your own work.
+Each installed copy gets a `.provenance.json` sidecar recording package name, version, and checksum. Missing copies are created and outdated plugin-owned copies are updated. If you have edited a skill or agent stub, or it was not installed by this plugin, it is left alone — uninstalling never deletes your own work.
 
 ## Running a review
 
 Ask for a review in OpenCode ("run MMAR on this branch", "multireview this PR") and the `mmar` skill takes over. It works out what you want reviewed, resolves the base ref, and hands a single request to the `mmar_orchestrator` agent.
 
-OpenCode's default [`subagent_depth`](https://opencode.ai/docs/config/#subagent-depth) is `1`. To let another agent invoke `mmar_orchestrator`, which then launches the specialist agents, set the depth to `2` in your OpenCode configuration:
+OpenCode's default [`experimental.subagent_depth`](https://opencode.ai/v2/docs/config/#subagent-depth) is `1`. To let another agent invoke `mmar_orchestrator`, which then launches the specialist agents, set the depth to `2` in your OpenCode configuration:
 
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "subagent_depth": 2
+  "experimental": { "subagent_depth": 2 }
 }
 ```
 
