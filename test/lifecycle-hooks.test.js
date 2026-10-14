@@ -35,8 +35,8 @@ function begin(store, sessionID) {
   })
 }
 
-function taskInput(sessionID) {
-  return { tool: "task", sessionID, callID: "call" }
+function subagentInput(sessionID) {
+  return { tool: "subagent", sessionID, callID: "call" }
 }
 
 function completeStore(store, request) {
@@ -44,10 +44,10 @@ function completeStore(store, request) {
 }
 
 function error(sessionID) {
-  return { type: "session.error", properties: sessionID === undefined ? {} : { sessionID } }
+  return { type: "session.execution.failed", data: sessionID === undefined ? {} : { sessionID } }
 }
 
-test("guards specialist dispatches by the active session lock and permits unrelated tasks", () => {
+test("guards specialist dispatches by the active session lock and permits unrelated subagents", () => {
   const { directory, databasePath } = temporaryDatabase()
   try {
     const store = new ReviewStore({ databasePath })
@@ -56,21 +56,23 @@ test("guards specialist dispatches by the active session lock and permits unrela
     const owner = "owner-session"
     const contender = "contender-session"
 
-    assert.throws(() => hooks.beforeTool(taskInput(owner), { subagent_type: "mmar_correctness" }), /active review lock/)
+    assert.throws(() => hooks.beforeTool(subagentInput(owner), { agent: "mmar_correctness" }, "mmar_orchestrator"), /active review lock/)
     const review = begin(store, owner)
-    assert.doesNotThrow(() => hooks.beforeTool(taskInput(owner), { subagent_type: "mmar_correctness" }))
-    assert.throws(() => hooks.beforeTool(taskInput(contender), { subagent_type: "mmar_correctness" }), /active review lock/)
-    assert.doesNotThrow(() => hooks.beforeTool(taskInput(owner), { subagent_type: "other_agent" }))
+    assert.doesNotThrow(() => hooks.beforeTool(subagentInput(owner), { agent: "mmar_correctness" }, "mmar_orchestrator"))
+    assert.throws(() => hooks.beforeTool(subagentInput(contender), { agent: "mmar_correctness" }, "mmar_orchestrator"), /active review lock/)
+    assert.doesNotThrow(() => hooks.beforeTool(subagentInput(owner), { agent: "other_agent" }, "other_agent"))
+    assert.throws(() => hooks.beforeTool(subagentInput(contender), { agent: "mmar_correctness" }, "mmar_orchestrator"), /active review lock/)
+    assert.doesNotThrow(() => hooks.beforeTool(subagentInput(owner), { agent: "mmar_correctness" }, "mmar_orchestrator"))
     assert.equal(lifecycle.activeReviewForSession(contender), undefined)
 
     completeStore(store, { reviewId: review.reviewId, roundId: review.roundId, fencingToken: review.fencingToken })
-    assert.throws(() => hooks.beforeTool(taskInput(owner), { subagent_type: "mmar_correctness" }), /active review lock/)
+    assert.throws(() => hooks.beforeTool(subagentInput(owner), { agent: "mmar_correctness" }, "mmar_orchestrator"), /active review lock/)
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }
 })
 
-test("ignores ordinary idle and records one diagnostic per session error", async () => {
+test("ignores ordinary idle and records one diagnostic per execution failure", async () => {
   const { directory, databasePath } = temporaryDatabase()
   try {
     const store = new ReviewStore({ databasePath })
@@ -80,12 +82,12 @@ test("ignores ordinary idle and records one diagnostic per session error", async
     const sessionID = "owner-session"
     const review = begin(store, sessionID)
 
-    await hooks.event({ type: "session.idle", properties: { sessionID } })
-    await hooks.event({ type: "session.idle", properties: { sessionID } })
+    await hooks.event({ type: "session.idle", data: {} })
+    await hooks.event({ type: "session.idle", data: {} })
     await hooks.event(error(sessionID))
     await hooks.event(error(sessionID))
     await hooks.event(error())
-    assert.deepEqual(diagnostics.map(({ event }) => event), ["session.error"])
+    assert.deepEqual(diagnostics.map(({ event }) => event), ["session.execution.failed"])
     assert.equal(lifecycle.activeReviewForSession(sessionID).reviewId, review.reviewId)
 
     assert.doesNotThrow(() => completeStore(store, {
@@ -119,7 +121,7 @@ test("releases a marker after a diagnostic failure so the event can retry", asyn
     await hooks.event(error(sessionID))
 
     assert.equal(attempts, 2)
-    assert.deepEqual(diagnostics, [{ event: "session.error", reviewId: review.reviewId, sessionID }])
+    assert.deepEqual(diagnostics, [{ event: "session.execution.failed", reviewId: review.reviewId, sessionID }])
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }

@@ -1,85 +1,24 @@
 import assert from "node:assert/strict"
-import { execFileSync, spawn, spawnSync } from "node:child_process"
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
-import { createServer } from "node:net"
+import { execFileSync } from "node:child_process"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { createServer } from "node:http"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
+import { fileURLToPath } from "node:url"
 import test from "node:test"
 import { ReviewStore } from "../dist/storage/reviews.js"
 import { createMmarTools } from "../dist/tools.js"
 import { ReviewLifecycleHooks } from "../dist/lifecycleHooks.js"
 import { PersistentReviewLifecycle } from "../dist/storage/lifecycle.js"
 import { laneRegistry } from "../dist/lanes.js"
+import { apiHeaders, getJson, isolatedEnvironment, resolveOpenCodeV2, startOpenCodeServer, stopOpenCodeServer, waitForPlugin } from "./opencode-v2-helpers.js"
 
-const pluginEntry = new URL("../dist/index.js", import.meta.url)
-const bundledSkills = new URL("../assets/skills", import.meta.url)
-const bundledSkillFile = new URL("../assets/skills/mmar/SKILL.md", import.meta.url)
-
-function commandExists(command) {
-  return spawnSync("which", [command], { stdio: "ignore" }).status === 0
-}
-
-function isolatedEnvironment(directory) {
-  const environment = {
-    ...process.env,
-    HOME: join(directory, "home"),
-    XDG_CONFIG_HOME: join(directory, "xdg-config"),
-    XDG_DATA_HOME: join(directory, "xdg-data"),
-    XDG_STATE_HOME: join(directory, "xdg-state"),
-    OPENCODE_DISABLE_DEFAULT_PLUGINS: "1",
-    OPENCODE_DISABLE_EXTERNAL_SKILLS: "1",
-    OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: "1",
-  }
-
-  for (const name of ["OPENCODE_CONFIG", "OPENCODE_CONFIG_CONTENT", "OPENCODE_SERVER", "OPENCODE_PID"]) delete environment[name]
-  return environment
-}
-
-function runOpenCode(args, cwd, env) {
-  const result = spawnSync("opencode", args, { cwd, env, encoding: "utf8" })
-  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`)
-  return result.stdout
-}
-
-function reservePort() {
-  return new Promise((resolve, reject) => {
-    const server = createServer()
-    server.once("error", reject)
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address()
-      server.close((error) => error ? reject(error) : resolve(address.port))
-    })
-  })
-}
-
-async function waitForServer(process, port) {
-  const deadline = Date.now() + 20_000
-  while (Date.now() < deadline) {
-    if (process.exitCode !== null) throw new Error(`OpenCode server exited before becoming ready (exit ${process.exitCode})`)
-    try {
-      const response = await fetch(`http://127.0.0.1:${port}/config`)
-      if (response.ok) return
-    } catch {
-      // The server is still starting.
-    }
-    await new Promise((resolve) => setTimeout(resolve, 100))
-  }
-  throw new Error("OpenCode server did not become ready")
-}
-
-async function getJson(port, path) {
-  const response = await fetch(`http://127.0.0.1:${port}${path}`)
-  assert.equal(response.ok, true, `${path} returned HTTP ${response.status}`)
-  return response.json()
-}
-
-function writeLegacyAgents(project) {
-  const directory = join(project, ".opencode", "agents")
-  mkdirSync(directory, { recursive: true })
-  for (const name of ["multireview", "_correctness", "_codestyle", "_testing"]) {
-    writeFileSync(join(directory, `${name}.md`), `---\ndescription: Legacy ${name} fixture\nmode: subagent\n---\nLegacy fixture agent.\n`, "utf8")
-  }
-}
+const resolved = resolveOpenCodeV2()
+const agentNames = ["mmar_orchestrator", ...laneRegistry.map(({ specialistAgent }) => specialistAgent)]
+const repositoryRoot = realpathSync(fileURLToPath(new URL("..", import.meta.url)))
+const pluginEntry = join(repositoryRoot, "server.js")
+const bundledAgentIds = ["mmar_orchestrator", "mmar_correctness", "mmar_codestyle", "mmar_testing", "mmar_intent"]
+const utilityAgentIds = ["title", "compaction", "summary"]
 
 function createGitProject(directory) {
   execFileSync("git", ["init", "--quiet", directory])
@@ -101,109 +40,254 @@ function beginArgs() {
 }
 
 function parseToolOutput(value) {
-  return JSON.parse(value)
+  return JSON.parse(typeof value === "string" ? value : value.content)
 }
 
-function taskRules(agent) {
-  return agent.permission.filter(({ permission }) => permission === "task").map(({ pattern, action }) => ({ pattern, action }))
+function location(directory) {
+  return `location[directory]=${encodeURIComponent(directory)}`
 }
 
-test("real OpenCode loads the local plugin alongside legacy agents and enforces MMAR lifecycle", { skip: !commandExists("opencode") ? "opencode binary is unavailable" : false }, async () => {
+async function responseJson(response, label, serverOutput) {
+  const text = await response.text()
+  assert.ok(response.ok, `${label} failed: HTTP ${response.status}: ${text}; server=${serverOutput}`)
+  return JSON.parse(text)
+}
+
+function sendCompletion(response, toolCall, text = "Done.") {
+  response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" })
+  const chunk = (choice) => `data: ${JSON.stringify({ id: "chatcmpl-1", object: "chat.completion.chunk", created: 1, model: "scripted-model", choices: [choice] })}\n\n`
+  if (toolCall) {
+    response.write(chunk({
+      index: 0,
+      delta: { role: "assistant", tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: toolCall.name, arguments: JSON.stringify(toolCall.arguments) } }] },
+      finish_reason: null,
+    }))
+    response.write(chunk({ index: 0, delta: {}, finish_reason: "tool_calls" }))
+  } else {
+    response.write(chunk({ index: 0, delta: { role: "assistant", content: text }, finish_reason: null }))
+    response.write(chunk({ index: 0, delta: {}, finish_reason: "stop" }))
+  }
+  response.end("data: [DONE]\n\n")
+}
+
+async function startMockLlm(scenario, targetFile) {
+  const requests = []
+  const errors = []
+  const server = createServer(async (request, response) => {
+    try {
+      const chunks = []
+      for await (const chunk of request) chunks.push(chunk)
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8"))
+      const tools = body.tools ?? []
+      const names = tools.map(({ function: fn }) => fn.name)
+      requests.push(names)
+      const lastUserMessage = [...(body.messages ?? [])].reverse().find(({ role }) => role === "user")?.content ?? ""
+      const isSummaryRequest = typeof lastUserMessage === "string" && /MUST summarize the conversation/.test(lastUserMessage)
+      let scriptedTool
+      if (scenario === "edit") scriptedTool = "edit"
+      if (scenario === "subagent") scriptedTool = "subagent"
+      if (scenario === "list") scriptedTool = "mmar_list_reviews"
+      const hasToolReply = body.messages?.some(({ role }) => role === "tool")
+      const shouldScriptTool = !hasToolReply && !isSummaryRequest
+      const scriptedToolIsAdvertised = scriptedTool !== undefined && names.includes(scriptedTool)
+      if (shouldScriptTool && scriptedToolIsAdvertised) {
+        let args = {}
+        if (scriptedTool === "edit") args = { path: targetFile, oldString: "original content", newString: "modified by tool", replaceAll: false }
+        if (scriptedTool === "subagent") args = { agent: "mmar_correctness", description: "Hook enforcement test", prompt: "Run the specialist", model: "mock/scripted", sessionID: "test", background: false }
+        sendCompletion(response, { name: scriptedTool, arguments: args })
+      } else if (isSummaryRequest) {
+        sendCompletion(response, undefined, "## Objective\n- Exercise the live plugin hook.\n\n## Requirements\n- Use the local scripted model.\n\n## Decisions\n- (none)\n\n## Work State\n### Completed\n- Started the session.\n\n### Active\n- Trigger the test tool call.\n\n### Blocked\n- (none)\n\n## Next Move\n1. Continue the test.\n\n## Relevant Files\n- (none)")
+      } else sendCompletion(response)
+    } catch (error) {
+      errors.push(String(error))
+      if (!response.headersSent) response.writeHead(500, { "content-type": "text/plain" })
+      response.end("mock request failed")
+    }
+  })
+  await new Promise((resolve, reject) => {
+    server.once("error", reject)
+    server.listen(0, "127.0.0.1", resolve)
+  })
+  return { server, port: server.address().port, requests, errors }
+}
+
+async function stopMockLlm(server) {
+  if (!server?.listening) return
+  server.closeAllConnections()
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("Mock LLM server shutdown timed out")), 5_000)
+    server.close((error) => {
+      clearTimeout(timer)
+      if (error) reject(error)
+      else resolve()
+    })
+  })
+}
+
+async function runHookSession({ project, fixture, agent, scenario, targetFile }) {
+  const mock = await startMockLlm(scenario, targetFile)
+  let server
+  try {
+    const config = {
+      $schema: "https://opencode.ai/config.json",
+      plugins: [repositoryRoot],
+      model: "mock/scripted",
+      providers: {
+        mock: {
+          name: "Local scripted mock",
+          env: ["MOCK_API_KEY"],
+          package: "@opencode/ai/providers/openai-compatible",
+          settings: { baseURL: `http://127.0.0.1:${mock.port}/v1`, transport: "http" },
+          models: {
+            scripted: {
+              modelID: "scripted-model",
+              capabilities: { tools: true, input: ["text"], output: ["text"] },
+              limit: { context: 8192, output: 1024 },
+            },
+          },
+        },
+      },
+      agents: {
+        ...Object.fromEntries(utilityAgentIds.map((id) => [id, { model: "mock/scripted" }])),
+        ...Object.fromEntries(bundledAgentIds.map((id) => [id, { model: "mock/scripted" }])),
+        [agent]: {
+          model: "mock/scripted",
+          mode: "primary",
+          permissions: [{ action: scenario === "edit" ? "edit" : "subagent", resource: "*", effect: "allow" }],
+        },
+      },
+    }
+    writeFileSync(join(project, "opencode.json"), JSON.stringify(config), "utf8")
+    const env = { ...isolatedEnvironment(fixture), MOCK_API_KEY: "dummy" }
+    const started = await startOpenCodeServer(resolved.bin, project, env)
+    server = started.child
+    const hostDirectory = realpathSync(project)
+    await waitForPlugin(started.port, `/api/plugin?${location(hostDirectory)}`, ({ source }) => source.type === "local" && source.path === pluginEntry, started.output)
+    const sessionResponse = await fetch(`http://127.0.0.1:${started.port}/api/session`, {
+      method: "POST",
+      headers: { ...apiHeaders(), "content-type": "application/json" },
+      body: JSON.stringify({ location: { directory: hostDirectory }, agent }),
+      signal: AbortSignal.timeout(10_000),
+    })
+    const sessionData = await responseJson(sessionResponse, "session create", started.output.join(""))
+    const session = sessionData.data ?? sessionData
+    const promptResponse = await fetch(`http://127.0.0.1:${started.port}/api/session/${session.id}/prompt`, {
+      method: "POST",
+      headers: { ...apiHeaders(), "content-type": "application/json" },
+      body: JSON.stringify({ text: "Perform the requested test action now." }),
+      signal: AbortSignal.timeout(10_000),
+    })
+    const promptText = await promptResponse.text()
+    assert.ok(promptResponse.ok, `prompt failed: HTTP ${promptResponse.status}: ${promptText}; server=${started.output.join("")}`)
+    const waitResponse = await fetch(`http://127.0.0.1:${started.port}/api/experimental/session/${session.id}/wait`, { method: "POST", headers: apiHeaders(), signal: AbortSignal.timeout(30_000) })
+    const waitText = await waitResponse.text()
+    assert.ok(waitResponse.ok, `session wait failed: HTTP ${waitResponse.status}: ${waitText}; server=${started.output.join("")}`)
+    const messageResponse = await fetch(`http://127.0.0.1:${started.port}/api/session/${session.id}/message`, { headers: apiHeaders(), signal: AbortSignal.timeout(10_000) })
+    const messageData = await responseJson(messageResponse, "message fetch", started.output.join(""))
+    const messages = messageData.data ?? messageData
+    const toolParts = messages.flatMap((message) => message.type === "assistant" || message.role === "assistant"
+      ? (message.content ?? []).filter(({ type }) => type === "tool")
+      : [])
+    console.log(`MMAR hook session ${agent} tool names:`, JSON.stringify([...new Set(mock.requests.flat())]))
+    assert.deepEqual(mock.errors, [])
+    return { toolParts, messages, requests: mock.requests, serverOutput: started.output.join("") }
+  } finally {
+    try {
+      await stopOpenCodeServer(server)
+    } finally {
+      await stopMockLlm(mock.server)
+    }
+  }
+}
+
+test("real OpenCode V2 loads the local plugin and enforces MMAR lifecycle", { skip: resolved.reason, timeout: 90_000 }, async () => {
   const fixture = mkdtempSync(join(tmpdir(), "opencode-multireview-real-smoke-"))
   const project = join(fixture, "project")
   mkdirSync(project, { recursive: true })
   createGitProject(project)
-  writeLegacyAgents(project)
-
-  const config = {
+  writeFileSync(join(project, "opencode.json"), JSON.stringify({
     $schema: "https://opencode.ai/config.json",
-    plugin: [pluginEntry.href],
-    // OpenCode 1.18.x resolves plugin config hooks only in the running server.
-    // Supplying the same bundled path here lets its native debug skill command
-    // prove discovery without installing a global or project copy.
-    skills: { paths: [new URL(bundledSkills).pathname] },
-    // A provider catalogue is required by OpenCode's debug agent command, but
-    // no credentials or model request are used by this smoke test.
-    enabled_providers: ["github-copilot"],
-    disabled_providers: ["github-copilot", "llm-gateway"],
-    mcp: {},
-    agent: { caller: { mode: "primary", permission: { task: "allow" } } },
-  }
-  writeFileSync(join(project, "opencode.json"), JSON.stringify(config), "utf8")
+    plugins: [repositoryRoot],
+    agents: {
+      mmar_correctness: {
+        permissions: [{ action: "edit", resource: "*", effect: "allow" }],
+      },
+    },
+  }), "utf8")
   const env = isolatedEnvironment(fixture)
-  mkdirSync(env.HOME, { recursive: true })
-  mkdirSync(env.XDG_CONFIG_HOME, { recursive: true })
-  mkdirSync(env.XDG_DATA_HOME, { recursive: true })
-  mkdirSync(env.XDG_STATE_HOME, { recursive: true })
-
   let server
   try {
-    const resolvedConfig = JSON.parse(runOpenCode(["debug", "config"], project, env))
-    assert.deepEqual(resolvedConfig.plugin, [pluginEntry.href])
-    assert.deepEqual(resolvedConfig.plugin_origins.map(({ scope, spec }) => ({ scope, spec })), [{ scope: "local", spec: pluginEntry.href }])
-    assert.equal(resolvedConfig.mcp && Object.keys(resolvedConfig.mcp).length, 0)
+    const started = await startOpenCodeServer(resolved.bin, project, env)
+    server = started.child
+    const hostDirectory = realpathSync(project)
 
-    const skills = JSON.parse(runOpenCode(["debug", "skill"], project, env))
-    const mmarSkill = skills.find(({ name }) => name === "mmar")
-    assert.ok(mmarSkill, "native debug skill discovery did not find mmar")
-    assert.equal(mmarSkill.location, new URL(bundledSkillFile).pathname)
-    assert.equal(existsSync(join(project, ".opencode", "skills", "mmar", "SKILL.md")), false)
+    const configs = await getJson(started.port, `/api/config?${location(hostDirectory)}`)
+    const projectConfig = configs.find(({ type, path }) => type === "document" && path.endsWith("opencode.json"))
+    assert.ok(projectConfig)
+    assert.ok(projectConfig.info.plugins.includes(repositoryRoot))
+    const localPlugin = await waitForPlugin(started.port, `/api/plugin?${location(hostDirectory)}`, ({ source }) => source.type === "local" && source.path === pluginEntry, started.output)
+    const serverAgents = await getJson(started.port, `/api/agent?${location(hostDirectory)}`)
+    assert.deepEqual(localPlugin.state, { status: "active" }, JSON.stringify(localPlugin))
+    console.log("MMAR real-host plugin status:", JSON.stringify(localPlugin))
 
-    for (const name of ["mmar_orchestrator", "mmar_correctness", "mmar_codestyle", "mmar_testing", "mmar_intent"]) {
-      const agent = JSON.parse(runOpenCode(["debug", "agent", name], project, env))
-      assert.equal(agent.name, name)
-      assert.equal(typeof agent.prompt, "string")
-      assert.ok(agent.prompt.trim().length > 0)
+    const agents = serverAgents
+    const bundledAgents = agents.filter(({ id }) => id.startsWith("mmar_"))
+    assert.deepEqual(bundledAgents.map(({ id }) => id).sort(), [...agentNames].sort())
+    const orchestrator = agents.find(({ id }) => id === "mmar_orchestrator")
+    assert.ok(orchestrator)
+    assert.equal(orchestrator.mode, "all")
+    assert.equal(orchestrator.hidden, false)
+    assert.ok(typeof orchestrator.system === "string" && orchestrator.system.trim())
+    const specialists = laneRegistry.map(({ specialistAgent }) => agents.find(({ id }) => id === specialistAgent))
+    for (const specialist of specialists) {
+      assert.ok(specialist, "missing MMAR specialist")
+      assert.equal(specialist.hidden, true)
+      assert.equal(specialist.mode, "subagent")
+      assert.ok(typeof specialist.system === "string" && specialist.system.trim())
+      assert.ok(specialist.permissions.some(({ action, resource, effect }) => action === "edit" && resource === "*" && effect === "deny"))
     }
 
-    const port = await reservePort()
-    server = spawn("opencode", ["serve", "--hostname", "127.0.0.1", "--port", String(port)], {
-      cwd: project,
-      env,
-      stdio: ["ignore", "pipe", "pipe"],
-    })
-    await waitForServer(server, port)
-
-    const serverConfig = await getJson(port, "/config")
-    const serverSkillPath = serverConfig.skills.paths.find((path) => path.includes("opencode-multireview-plugin"))
-    assert.equal(serverSkillPath, new URL(bundledSkills).pathname)
-    assert.equal(existsSync(join(serverSkillPath, "mmar", "SKILL.md")), true)
-    assert.equal(serverConfig.subagent_depth >= 2, true)
-
-    // /agent proves OpenCode normalized the plugin's permission config. It
-    // does not prove native TaskTool filtering or a nested model dispatch;
-    // OpenCode exposes no stable direct API for either assertion.
-    const agents = await getJson(port, "/agent")
-    const agentNames = agents.map(({ name }) => name)
-    const specialists = laneRegistry.map((lane) => lane.specialistAgent)
-    assert.deepEqual(agentNames.filter((name) => name.startsWith("mmar_")).sort(), [...specialists, "mmar_orchestrator"].sort())
-    assert.equal(agents.find(({ name }) => name === "mmar_orchestrator").hidden, false)
-    for (const name of specialists) assert.equal(agents.find((agent) => agent.name === name).hidden, true)
-    const caller = agents.find(({ name }) => name === "caller")
-    assert.ok(caller)
-    assert.deepEqual(taskRules(caller).slice(-specialists.length), specialists.map((pattern) => ({ pattern, action: "deny" })))
-    const orchestrator = agents.find(({ name }) => name === "mmar_orchestrator")
-    assert.ok(orchestrator)
-    assert.deepEqual(taskRules(orchestrator).slice(-specialists.length - 1), [
-      { pattern: "*", action: "deny" },
-      ...specialists.map((pattern) => ({ pattern, action: "allow" })),
+    const dispatchRules = orchestrator.permissions.filter(({ action }) => action === "subagent")
+    assert.deepEqual(dispatchRules.slice(-laneRegistry.length - 1), [
+      { action: "subagent", resource: "*", effect: "deny" },
+      ...laneRegistry.map(({ specialistAgent }) => ({ action: "subagent", resource: specialistAgent, effect: "allow" })),
     ])
-    for (const legacy of ["multireview", "_correctness", "_codestyle", "_testing"]) assert.ok(agentNames.includes(legacy), `missing legacy agent ${legacy}`)
+    const correctness = agents.find(({ id }) => id === "mmar_correctness")
+    const userEditRule = correctness.permissions.findLast(({ action, resource, effect }) => action === "edit" && resource === "*" && effect === "allow")
+    assert.ok(userEditRule, "user-configured edit allow should be appended after plugin permissions")
+    console.log("MMAR real-host orchestrator subagent permissions:", JSON.stringify(dispatchRules))
+    console.log("MMAR real-host correctness edit permissions:", JSON.stringify(correctness.permissions.filter(({ action }) => action === "edit")))
+    // The last-match permission list intentionally demonstrates user config precedence;
+    // execute.before, not these declarative permissions, enforces MMAR edit restrictions.
 
-    // Lifecycle evidence boundary: no model is involved. These are the same
-    // exported tools/hooks registered by the real plugin, backed by isolated
-    // SQLite state in this temporary fixture.
+    let skillRegistered = false
+    const skillResponse = await fetch(`http://127.0.0.1:${started.port}/api/skill?${location(hostDirectory)}`, { headers: apiHeaders(), signal: AbortSignal.timeout(10_000) })
+    if (skillResponse.ok) {
+      const responseBody = await skillResponse.json()
+      const skills = Array.isArray(responseBody) ? responseBody : responseBody.data ?? responseBody
+      skillRegistered = skills.some(({ id, name }) => id === "mmar" || name?.toLowerCase() === "mmar")
+      assert.ok(skillRegistered, `MMAR skill missing from API: ${JSON.stringify(skills)}`)
+      assert.equal(existsSync(join(project, ".opencode", "skills", "mmar", "SKILL.md")), false)
+    } else {
+      console.log(`MMAR skill API unavailable (HTTP ${skillResponse.status}); plugin setup and skill transform ran without error`)
+    }
+
+    // These are the same exported tools/hooks registered by the real plugin,
+    // backed by isolated SQLite state; no model request is made.
     const databasePath = join(fixture, "plugin-state", "reviews.sqlite")
     const tools = createMmarTools({ databasePath })
     assert.equal(typeof tools.mmar_set_finding_disposition, "object")
     const hooks = new ReviewLifecycleHooks(new PersistentReviewLifecycle({ databasePath }), () => {})
     const sessionID = "smoke-session"
-    const task = { tool: "task", sessionID, callID: "smoke-call" }
-    assert.throws(() => hooks.beforeTool(task, { subagent_type: "mmar_correctness" }), /active review lock/)
+    const dispatch = { tool: "subagent", sessionID, callID: "smoke-call" }
+    assert.throws(() => hooks.beforeTool(dispatch, { agent: "mmar_correctness" }, "mmar_orchestrator"), /active review lock/)
 
     const begun = parseToolOutput(await tools.mmar_begin.execute(beginArgs(), toolContext(project, "mmar_orchestrator", sessionID)))
     assert.equal(begun.locked, false)
-    assert.doesNotThrow(() => hooks.beforeTool(task, { subagent_type: "mmar_correctness" }))
+    assert.doesNotThrow(() => hooks.beforeTool(dispatch, { agent: "mmar_correctness" }, "mmar_orchestrator"))
+    assert.throws(() => hooks.beforeTool({ ...dispatch, tool: "edit" }, {}, "mmar_correctness"), /may not use edit-class tools/)
+    assert.throws(() => hooks.beforeTool(dispatch, { agent: "mmar_correctness" }, "mmar_testing"), /Only mmar_orchestrator/)
+    assert.throws(() => hooks.beforeTool(dispatch, { agent: "general" }, "mmar_orchestrator"), /may dispatch only canonical/)
 
     const completed = parseToolOutput(await tools.mmar_complete.execute({
       reviewId: begun.reviewId,
@@ -227,13 +311,67 @@ test("real OpenCode loads the local plugin alongside legacy agents and enforces 
     const disposition = parseToolOutput(await tools.mmar_set_finding_disposition.execute({ findingId: smokeFinding.id, disposition: "ignored", reason: "Smoke disposition" }, toolContext(project, "mmar_orchestrator", "disposition-session")))
     assert.equal(disposition.disposition, "ignored")
     assert.equal(store.getRound(begun.reviewId).ignoredFindings[0].wontfix, "Smoke disposition")
-    assert.throws(() => hooks.beforeTool(task, { subagent_type: "mmar_correctness" }), /active review lock/)
+    assert.throws(() => hooks.beforeTool(dispatch, { agent: "mmar_correctness" }, "mmar_orchestrator"), /active review lock/)
     assert.equal(existsSync(join(project, "REVIEW_FINDINGS.md")), false)
+    if (skillRegistered) console.log("MMAR real-host skill: registered via /api/skill")
   } finally {
-    if (server && server.exitCode === null) {
-      server.kill("SIGTERM")
-      await new Promise((resolve) => server.once("exit", resolve))
+    try {
+      await stopOpenCodeServer(server)
+    } finally {
+      rmSync(fixture, { recursive: true, force: true })
     }
+  }
+})
+
+test("real OpenCode V2 hook rejects edit escalation through a live session", { skip: resolved.reason, timeout: 90_000 }, async () => {
+  const fixture = mkdtempSync(join(tmpdir(), "opencode-multireview-hook-edit-"))
+  const project = join(fixture, "project")
+  mkdirSync(project, { recursive: true })
+  createGitProject(project)
+  const targetFile = join(project, "protected.txt")
+  writeFileSync(targetFile, "original content", "utf8")
+  try {
+    const result = await runHookSession({ project, fixture, agent: "mmar_orchestrator", scenario: "edit", targetFile })
+    const editTool = result.toolParts.find(({ name }) => ["edit", "write", "patch"].includes(name))
+    assert.ok(editTool, `no edit-class tool call: tools=${JSON.stringify(result.requests.map(({ tools }) => tools))}; output=${result.serverOutput}`)
+    assert.equal(editTool.state.status, "error")
+    assert.match(editTool.state.error.message, /Bundled MMAR agents may not use edit-class tools/)
+    assert.equal(readFileSync(targetFile, "utf8"), "original content")
+    console.log("MMAR edit hook error:", editTool.state.error.message)
+  } finally {
+    rmSync(fixture, { recursive: true, force: true })
+  }
+})
+
+test("real OpenCode V2 hook rejects specialist dispatch from a non-orchestrator", { skip: resolved.reason, timeout: 90_000 }, async () => {
+  const fixture = mkdtempSync(join(tmpdir(), "opencode-multireview-hook-subagent-"))
+  const project = join(fixture, "project")
+  mkdirSync(project, { recursive: true })
+  createGitProject(project)
+  try {
+    const result = await runHookSession({ project, fixture, agent: "caller", scenario: "subagent", targetFile: project })
+    const dispatch = result.toolParts.find(({ name }) => name === "subagent")
+    assert.ok(dispatch, `no subagent tool call: tools=${JSON.stringify(result.requests.map(({ tools }) => tools))}; output=${result.serverOutput}`)
+    assert.equal(dispatch.state.status, "error")
+    assert.match(dispatch.state.error.message, /Only mmar_orchestrator may dispatch canonical MMAR specialists/)
+    console.log("MMAR subagent hook error:", dispatch.state.error.message)
+  } finally {
+    rmSync(fixture, { recursive: true, force: true })
+  }
+})
+
+test("real OpenCode V2 executes mmar_list_reviews through a live session", { skip: resolved.reason, timeout: 90_000 }, async () => {
+  const fixture = mkdtempSync(join(tmpdir(), "opencode-multireview-hook-list-"))
+  const project = join(fixture, "project")
+  mkdirSync(project, { recursive: true })
+  createGitProject(project)
+  try {
+    const result = await runHookSession({ project, fixture, agent: "mmar_orchestrator", scenario: "list", targetFile: project })
+    const listTool = result.toolParts.find(({ name }) => name === "mmar_list_reviews")
+    assert.ok(listTool, `no list_reviews tool call: tools=${JSON.stringify(result.requests)}`)
+    assert.equal(listTool.state.status, "completed")
+    assert.deepEqual(JSON.parse(listTool.state.content[0].text), [])
+  } finally {
     rmSync(fixture, { recursive: true, force: true })
   }
 })

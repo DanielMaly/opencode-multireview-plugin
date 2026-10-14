@@ -47,18 +47,18 @@ test("normalizes legacy string and object model overrides", () => {
   const configPath = join(dir, "config.json");
   writeFileSync(
     configPath,
-    JSON.stringify({ models: { correctness: "local-correctness", testing: { model: "local-testing", variant: "fast" } } }),
+    JSON.stringify({ models: { correctness: "local/correctness", testing: { model: "local/testing", variant: "fast" } } }),
     "utf8",
   );
 
   try {
     const config = loadMultireviewConfig({
       configPath,
-      models: { testing: "option-testing" },
+      models: { testing: "option/testing" },
     });
 
-    assert.deepEqual(config.models.correctness, { model: "local-correctness" });
-    assert.deepEqual(config.models.testing, { model: "option-testing" });
+    assert.deepEqual(config.models.correctness, { model: "local/correctness" });
+    assert.deepEqual(config.models.testing, { model: "option/testing" });
     assert.deepEqual(config.models.coordinator, { model: "github-copilot/claude-opus-5" });
     assert.deepEqual(config.models.intent, { model: "github-copilot/claude-opus-5" });
   } finally {
@@ -75,13 +75,13 @@ test("selects a partial profile and applies file and tuple precedence atomically
       profile: "fast",
       profiles: {
         fast: {
-          coordinator: { model: "profile-coordinator", variant: "profile-variant" },
-          correctness: "profile-correctness",
+          coordinator: { model: "profile/coordinator", variant: "profile-variant" },
+          correctness: "profile/correctness",
         },
       },
       models: {
-        coordinator: "file-coordinator",
-        testing: { model: "file-testing", variant: "file-variant" },
+        coordinator: "file/coordinator",
+        testing: { model: "file/testing", variant: "file-variant" },
       },
     }),
     "utf8",
@@ -90,12 +90,12 @@ test("selects a partial profile and applies file and tuple precedence atomically
   try {
     const config = loadMultireviewConfig({
       configPath,
-      models: { testing: "tuple-testing" },
+      models: { testing: "tuple/testing" },
     });
 
-    assert.deepEqual(config.models.coordinator, { model: "file-coordinator" });
-    assert.deepEqual(config.models.correctness, { model: "profile-correctness" });
-    assert.deepEqual(config.models.testing, { model: "tuple-testing" });
+    assert.deepEqual(config.models.coordinator, { model: "file/coordinator" });
+    assert.deepEqual(config.models.correctness, { model: "profile/correctness" });
+    assert.deepEqual(config.models.testing, { model: "tuple/testing" });
     assert.deepEqual(config.models.codestyle, { model: "github-copilot/claude-sonnet-5" });
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -110,8 +110,8 @@ test("uses a non-empty environment profile before the file profile", () => {
     JSON.stringify({
       profile: "file-profile",
       profiles: {
-        "file-profile": { coordinator: "file-profile-model" },
-        "env-profile": { coordinator: "env-profile-model" },
+        "file-profile": { coordinator: "file/profile-model" },
+        "env-profile": { coordinator: "env/profile-model" },
       },
     }),
     "utf8",
@@ -120,10 +120,10 @@ test("uses a non-empty environment profile before the file profile", () => {
 
   try {
     process.env.OPENCODE_MULTIREVIEW_PROFILE = " env-profile ";
-    assert.deepEqual(loadMultireviewConfig({ configPath }).models.coordinator, { model: "env-profile-model" });
+    assert.deepEqual(loadMultireviewConfig({ configPath }).models.coordinator, { model: "env/profile-model" });
 
     process.env.OPENCODE_MULTIREVIEW_PROFILE = "   ";
-    assert.deepEqual(loadMultireviewConfig({ configPath }).models.coordinator, { model: "file-profile-model" });
+    assert.deepEqual(loadMultireviewConfig({ configPath }).models.coordinator, { model: "file/profile-model" });
   } finally {
     if (previous === undefined) delete process.env.OPENCODE_MULTIREVIEW_PROFILE;
     else process.env.OPENCODE_MULTIREVIEW_PROFILE = previous;
@@ -134,18 +134,18 @@ test("uses a non-empty environment profile before the file profile", () => {
 test("warns and falls back to shipped defaults for an unknown profile", () => {
   const dir = mkdtempSync(join(tmpdir(), "multireview-plugin-"));
   const configPath = join(dir, "config.json");
-  writeFileSync(configPath, JSON.stringify({ profile: "missing", models: { testing: "file-testing" } }), "utf8");
+  writeFileSync(configPath, JSON.stringify({ profile: "missing", models: { testing: "file/testing" } }), "utf8");
   const warnings = [];
   const originalWarn = console.warn;
 
   try {
     console.warn = (message) => warnings.push(message);
-    const config = loadMultireviewConfig({ configPath, models: { correctness: "tuple-correctness" } });
+    const config = loadMultireviewConfig({ configPath, models: { correctness: "tuple/correctness" } });
 
     assert.deepEqual(config.models.coordinator, { model: "github-copilot/claude-opus-5" });
     assert.deepEqual(config.models.intent, { model: "github-copilot/claude-opus-5" });
-    assert.deepEqual(config.models.testing, { model: "file-testing" });
-    assert.deepEqual(config.models.correctness, { model: "tuple-correctness" });
+    assert.deepEqual(config.models.testing, { model: "file/testing" });
+    assert.deepEqual(config.models.correctness, { model: "tuple/correctness" });
     assert.equal(warnings.length, 1);
     assert.match(warnings[0], /missing/);
   } finally {
@@ -159,8 +159,9 @@ test("rejects malformed model and profile configuration", () => {
     [{ models: [] }, /models.*must be an object/],
     [{ models: { correctness: [] } }, /models\.correctness.*non-empty string or an object/],
     [{ models: { correctness: "" } }, /models\.correctness.*non-empty string/],
+    [{ models: { correctness: "model-without-provider" } }, /models\.correctness.*provider\/model/],
     [{ models: { correctness: {} } }, /models\.correctness.*non-empty model string/],
-    [{ models: { correctness: { model: "model", variant: "" } } }, /variant.*non-empty string/],
+    [{ models: { correctness: { model: "provider/model", variant: "" } } }, /variant.*non-empty string/],
     [{ models: { unknown: "model" } }, /unknown reviewer key/],
     [{ profiles: [] }, /profiles.*must be an object/],
     [{ profiles: { fast: [] } }, /profiles\.fast.*must be an object/],
@@ -185,4 +186,15 @@ test("rejects unknown tuple reviewer keys", () => {
     () => loadMultireviewConfig({ configPath: "/nonexistent/multireview-plugin.json", models: { unknown: "model" } }),
     /unknown reviewer key/,
   );
+});
+
+test("rejects invalid variants at the reviewer config boundary", () => {
+  const dir = mkdtempSync(join(tmpdir(), "multireview-plugin-"));
+  const configPath = join(dir, "config.json");
+  writeFileSync(configPath, JSON.stringify({ models: { correctness: { model: "provider/model", variant: "a#b" } } }), "utf8");
+  try {
+    assert.throws(() => loadMultireviewConfig({ configPath }), /models\.correctness.*invalid model selection/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

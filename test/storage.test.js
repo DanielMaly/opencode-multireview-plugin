@@ -56,6 +56,10 @@ function completeStore(store, request) {
   return store.complete({ ...request, laneResults });
 }
 
+function parseToolOutput(value) {
+  return JSON.parse(typeof value === "string" ? value : value.content);
+}
+
 function ignoredFinding(title = "Ignore this") {
   return {
     disposition: "ignored",
@@ -135,14 +139,14 @@ test("upgrades v1 lifecycle data and supports legacy completion compatibility", 
 
     const tools = createMmarTools({ databasePath });
     const context = { agent: "mmar_orchestrator", directory, worktree: directory, sessionID: "legacy-session" };
-    const activeCompletion = JSON.parse(await tools.mmar_complete.execute({
+    const activeCompletion = parseToolOutput(await tools.mmar_complete.execute({
       reviewId: activeReviewId,
       roundId: activeRoundId,
       fencingToken: activeToken,
     }, context));
     assert.deepEqual(activeCompletion, { roundId: activeRoundId, idempotent: false });
 
-    const completedRetry = JSON.parse(await tools.mmar_complete.execute({
+    const completedRetry = parseToolOutput(await tools.mmar_complete.execute({
       reviewId: completedReviewId,
       roundId: completedRoundId,
       fencingToken: completedToken,

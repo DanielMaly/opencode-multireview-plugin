@@ -105,7 +105,7 @@ If completion fails, report the review ID and round ID and provide the explicit 
 opencode-multireview unlock <review-id>
 ```
 
-Never unlock speculatively, complete with a replaced fencing token, or attempt an alternate persistence path. Treat ordinary `session.idle` as normal per-turn idle, not abandonment. Use `session.error` as the runtime incomplete-review signal and preserve the explicit recovery flow.
+Never unlock speculatively, complete with a replaced fencing token, or attempt an alternate persistence path. Treat ordinary `session.idle` as normal per-turn idle, not abandonment. Use `session.execution.failed` as the runtime incomplete-review signal and preserve the explicit recovery flow.
 
 ## Final response boundaries
 

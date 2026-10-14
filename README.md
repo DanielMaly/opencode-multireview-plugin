@@ -24,11 +24,17 @@ Then register the plugin in your OpenCode configuration if it is not already loa
 
 ```json
 {
-  "plugin": ["opencode-multireview-plugin"]
+  "plugins": ["opencode-multireview-plugin"]
 }
 ```
 
 Plugin registration is required for reviews: it supplies the orchestrator agents and MMAR tools, and registers the `mmar` skill directly with OpenCode. No manual skill copying is needed when the plugin is loaded.
+
+### Versions
+
+Version 2.x requires OpenCode V2. Version 1.x supports OpenCode V1 (`npm install opencode-multireview-plugin@1`) and uses the `plugin` key and top-level `subagent_depth`.
+
+In 2.x the plugin does not set `experimental.subagent_depth` for you; see [Running a review](#running-a-review). To load a local clone, add the clone's directory, not a file inside it, to `plugins`.
 
 ### Standalone skill install (optional)
 
@@ -47,12 +53,12 @@ Each installed copy gets a `.provenance.json` sidecar recording package name, ve
 
 Ask for a review in OpenCode ("run MMAR on this branch", "multireview this PR") and the `mmar` skill takes over. It works out what you want reviewed, resolves the base ref, and hands a single request to the `mmar_orchestrator` agent.
 
-OpenCode's default [`subagent_depth`](https://opencode.ai/docs/config/#subagent-depth) is `1`. To let another agent invoke `mmar_orchestrator`, which then launches the specialist agents, set the depth to `2` in your OpenCode configuration:
+OpenCode's default [`experimental.subagent_depth`](https://opencode.ai/v2/docs/config/#subagent-depth) is `1`. To let another agent invoke `mmar_orchestrator`, which then launches the specialist agents, set the depth to `2` in your OpenCode configuration:
 
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "subagent_depth": 2
+  "experimental": { "subagent_depth": 2 }
 }
 ```
 
@@ -125,7 +131,7 @@ The database is created on first use and upgraded with packaged, checksummed, fo
 
 It holds review identity, immutable rounds, findings, dismissal overrides, open questions, and lock metadata. It does **not** store fetched ticket or file content, full diffs, transcripts, or Markdown.
 
-Models are configured per lane in `~/.config/opencode/multireview-plugin.json`. The keys are `coordinator`, `correctness`, `codestyle`, `testing`, and `intent`. Plugin options can override the config path and model choices.
+Models are configured per lane in `~/.config/opencode/multireview-plugin.json`. The keys are `coordinator`, `correctness`, `codestyle`, `testing`, and `intent`. Each model must be a `provider/model` reference; an invalid reference stops the plugin from loading with an error that names the key. Plugin options can override the config path and model choices.
 
 ## Development
 
@@ -139,6 +145,8 @@ npm pack --dry-run
 ```
 
 The test suite is deterministic and never calls a paid or live model. Live-model routing has to be verified by hand.
+
+Four tests load the plugin into a real OpenCode V2 server, with isolated config and data directories and a scripted local model. They run when `opencode` on `PATH` is V2, or when `OPENCODE_V2_BIN` points to a V2 binary; otherwise they are skipped.
 
 ## Publishing
 

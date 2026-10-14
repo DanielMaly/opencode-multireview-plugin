@@ -19,4 +19,11 @@ jobs:
 
       - run: npm install
 
+      - name: Install OpenCode V2 for live tests
+        run: |
+          VERSION="$(node -p "require('./package.json').devDependencies['@opencode/plugin']")"
+          npm install --prefix "$RUNNER_TEMP/opencode-v2" --no-save "@opencode/cli-linux-x64@$VERSION"
+          echo "OPENCODE_V2_BIN=$RUNNER_TEMP/opencode-v2/node_modules/@opencode/cli-linux-x64/bin/opencode" >> "$GITHUB_ENV"
+          echo "REQUIRE_OPENCODE_V2=1" >> "$GITHUB_ENV"
+
       - run: npm test

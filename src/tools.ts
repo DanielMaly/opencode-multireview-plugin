@@ -1,93 +1,120 @@
-import { tool, type ToolContext, type ToolDefinition } from "@opencode-ai/plugin"
 import { relative } from "node:path"
+import { Schema } from "effect"
 import { findingDispositions, findingSeverities } from "./findings.js"
-import { canonicalPath, normalizeTarget, resolveExplicitGitWorktree, resolveRepositoryIdentity, resolveReviewIdentity, targetKinds, type RepositoryIdentity, type TargetInput } from "./repository.js"
+import { canonicalPath, normalizeTarget, resolveExplicitGitWorktree, resolveRepositoryIdentity, resolveReviewIdentity, targetKinds, type RepositoryIdentity } from "./repository.js"
 import { intentTypes, LEGACY_SESSION_ID } from "./review.js"
 import type { DatabaseOptions } from "./storage/database.js"
 import type { ReviewStore } from "./storage/reviews.js"
 import { laneForCanonicalSpecialist, normalizeLanes } from "./lanes.js"
 
-const z = tool.schema
+export type MmarToolContext = {
+  readonly sessionID: string
+  readonly agent: string
+  readonly directory: string
+  readonly worktree: string
+}
+type ToolInputSchema = Schema.Struct<Schema.Struct.Fields> & Schema.Codec<unknown, unknown, never, never>
+export type ToolDefinition = {
+  readonly name: string
+  readonly description: string
+  readonly options: { readonly codemode: false }
+  readonly input: ToolInputSchema
+  readonly execute: (input: unknown, context: MmarToolContext) => Promise<{ content: string }>
+}
 
-const targetSchema = z.object({
-  kind: z.enum(targetKinds),
-  label: z.string().trim().min(1).optional(),
-  provider: z.string().trim().min(1).optional(),
-  repository: z.string().trim().min(1).optional(),
-  number: z.number().int().positive().optional(),
-  branch: z.string().trim().min(1).optional(),
-  commit: z.string().trim().min(1).optional(),
-  changeset: z.string().trim().min(1).optional(),
-}).strict()
+const NonEmpty = Schema.Trim.check(Schema.isNonEmpty())
+const Id = Schema.String.check(Schema.isUUID())
+const PositiveInt = Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1))
+const optionalKey = Schema.optionalKey
+const target = Schema.Struct({
+  kind: Schema.Literals(targetKinds),
+  label: optionalKey(NonEmpty),
+  provider: optionalKey(NonEmpty),
+  repository: optionalKey(NonEmpty),
+  number: optionalKey(PositiveInt),
+  branch: optionalKey(NonEmpty),
+  commit: optionalKey(NonEmpty),
+  changeset: optionalKey(NonEmpty),
+})
+const intent = optionalKey(Schema.NullOr(Schema.Struct({
+  type: Schema.Literals(intentTypes),
+  ref: NonEmpty,
+})))
+const finding = Schema.Struct({
+  disposition: Schema.Literals(findingDispositions),
+  severity: Schema.Literals(findingSeverities),
+  category: NonEmpty,
+  title: Schema.String,
+  bodyMarkdown: Schema.String,
+  wontfix: optionalKey(Schema.String),
+  sourceAgents: Schema.mutable(Schema.Array(Schema.String)),
+  blockedByUncertaintyIds: optionalKey(Schema.mutable(Schema.Array(Schema.String))),
+})
+const uncertainty = Schema.Struct({
+  title: Schema.String,
+  observedEvidence: Schema.String,
+  missingContext: Schema.String,
+  clarificationQuestion: Schema.String,
+})
+const laneResult = Schema.Struct({
+  lane: NonEmpty,
+  status: Schema.Literals(["completed", "failed"]),
+  failureReason: optionalKey(NonEmpty),
+})
+const worktreePath = optionalKey(NonEmpty)
+const beginArgs = Schema.Struct({
+  target,
+  baseRef: NonEmpty,
+  requestScope: NonEmpty,
+  intent,
+  lanes: optionalKey(Schema.mutable(Schema.Array(Schema.String))),
+  worktreePath,
+})
+const completeArgs = Schema.Struct({
+  reviewId: Id,
+  roundId: Id,
+  fencingToken: Id,
+  intent,
+  laneResults: optionalKey(Schema.mutable(Schema.Array(laneResult))),
+  validFindings: optionalKey(Schema.mutable(Schema.Array(finding))),
+  ignoredFindings: optionalKey(Schema.mutable(Schema.Array(finding))),
+  uncertainties: optionalKey(Schema.mutable(Schema.Array(uncertainty))),
+  worktreePath,
+})
+const listReviewsArgs = Schema.Struct({
+  worktreePath,
+})
+const getFindingsArgs = Schema.Struct({
+  reviewId: Id,
+  roundId: optionalKey(Id),
+  worktreePath,
+})
+const setFindingDispositionArgs = Schema.Struct({
+  findingId: PositiveInt,
+  disposition: Schema.Literals(findingDispositions),
+  reason: optionalKey(Schema.String),
+  worktreePath,
+})
 
-const intentSchema = z.object({
-  type: z.enum(intentTypes),
-  ref: z.string().trim().min(1),
-}).strict()
+function defineTool<S extends Schema.Struct<Schema.Struct.Fields> & Schema.Codec<unknown, unknown, never, never>>(definition: {
+  name: string
+  description: string
+  args: S
+  execute: (args: S["Type"], context: MmarToolContext) => Promise<string>
+}): ToolDefinition {
+  const decode = Schema.decodeUnknownSync(definition.args, { onExcessProperty: "error" })
+  return {
+    name: definition.name,
+    description: definition.description,
+    options: { codemode: false },
+    input: definition.args,
+    execute: async (input, context) => ({
+      content: await definition.execute(decode(input), context),
+    }),
+  }
+}
 
-const findingSchema = z.object({
-  disposition: z.enum(findingDispositions),
-  severity: z.enum(findingSeverities),
-  category: z.string().trim().min(1),
-  title: z.string(),
-  bodyMarkdown: z.string(),
-  wontfix: z.string().optional(),
-  sourceAgents: z.array(z.string()),
-  blockedByUncertaintyIds: z.array(z.string()).optional(),
-}).strict()
-
-const uncertaintySchema = z.object({
-  title: z.string(),
-  observedEvidence: z.string(),
-  missingContext: z.string(),
-  clarificationQuestion: z.string(),
-}).strict()
-
-const idSchema = z.string().uuid()
-
-const beginArgsSchema = z.object({
-  target: targetSchema,
-  baseRef: z.string().trim().min(1),
-  requestScope: z.string().trim().min(1),
-  intent: intentSchema.nullable().optional(),
-  lanes: z.array(z.string()).optional(),
-  worktreePath: z.string().trim().min(1).optional(),
-}).strict()
-
-const completeArgsSchema = z.object({
-  reviewId: idSchema,
-  roundId: idSchema,
-  fencingToken: idSchema,
-  intent: intentSchema.nullable().optional(),
-  laneResults: z.array(z.object({
-    lane: z.string().trim().min(1),
-    status: z.enum(["completed", "failed"]),
-    failureReason: z.string().trim().min(1).optional(),
-  }).strict()).optional(),
-  validFindings: z.array(findingSchema).optional(),
-  ignoredFindings: z.array(findingSchema).optional(),
-  uncertainties: z.array(uncertaintySchema).optional(),
-  worktreePath: z.string().trim().min(1).optional(),
-}).strict()
-
-const listReviewsArgsSchema = z.object({
-  worktreePath: z.string().trim().min(1).optional(),
-}).strict()
-
-const getFindingsArgsSchema = z.object({
-  reviewId: idSchema,
-  roundId: idSchema.optional(),
-  worktreePath: z.string().trim().min(1).optional(),
-}).strict()
-
-const setFindingDispositionArgsSchema = z.object({
-  findingId: z.number().int().positive(),
-  disposition: z.enum(findingDispositions),
-  reason: z.string().optional(),
-  worktreePath: z.string().trim().min(1).optional(),
-}).strict()
-
-function contextWorktree(context: ToolContext): string {
+function contextWorktree(context: MmarToolContext): string {
   validateToolContext(context)
   const directory = context.directory.trim()
   const worktree = context.worktree.trim()
@@ -98,7 +125,7 @@ function contextWorktree(context: ToolContext): string {
   return canonicalPath(worktree)
 }
 
-function validateToolContext(context: ToolContext): void {
+function validateToolContext(context: MmarToolContext): void {
   const agent = context.agent
   const directory = context.directory.trim()
   const worktree = context.worktree.trim()
@@ -111,21 +138,21 @@ function validateToolContext(context: ToolContext): void {
   if (!sessionID || sessionID === LEGACY_SESSION_ID) throw new Error("MMAR tool context must include a valid sessionID")
 }
 
-function trustedWriteRepository(context: ToolContext, worktreePath: string | undefined): string {
+function trustedWriteRepository(context: MmarToolContext, worktreePath: string | undefined): string {
   if (context.agent !== "mmar_orchestrator") throw new Error("MMAR write tools are available only to mmar_orchestrator")
   validateToolContext(context)
   if (worktreePath !== undefined) return resolveExplicitGitWorktree(worktreePath).worktreePath
   return contextWorktree(context)
 }
 
-function authorizeDispositionRepository(context: ToolContext, worktreePath: string | undefined): RepositoryIdentity {
+function authorizeDispositionRepository(context: MmarToolContext, worktreePath: string | undefined): RepositoryIdentity {
   validateToolContext(context)
   if (laneForCanonicalSpecialist(context.agent)) throw new Error("MMAR finding disposition is unavailable to canonical specialists")
   if (worktreePath !== undefined) return resolveExplicitGitWorktree(worktreePath)
   return resolveRepositoryIdentity(contextWorktree(context))
 }
 
-function readRepository(context: ToolContext, worktreePath: string | undefined): RepositoryIdentity {
+function readRepository(context: MmarToolContext, worktreePath: string | undefined): RepositoryIdentity {
   if (worktreePath === undefined) {
     const path = contextWorktree(context)
     return resolveRepositoryIdentity(path)
@@ -148,14 +175,14 @@ export function createMmarTools(databaseOptions: DatabaseOptions = {}): Record<s
     return store
   }
 
-  const begin = tool({
+  const begin = defineTool({
+    name: "mmar_begin",
     description: "Begin a fenced MMAR review round for the current worktree or an explicit absolute local Git worktree root, selecting exact review lanes and returning the effective lanes.",
-    args: beginArgsSchema.shape,
-    async execute(args, context) {
-      const input = beginArgsSchema.parse(args)
+    args: beginArgs,
+    async execute(input, context) {
       const worktree = trustedWriteRepository(context, input.worktreePath)
       const identity = resolveReviewIdentity(worktree, input.baseRef)
-      const target = normalizeTarget(input.target as TargetInput, identity)
+      const target = normalizeTarget(input.target, identity)
       const lanes = normalizeLanes(input.lanes, input.intent !== undefined && input.intent !== null)
       const review = (await getStore()).begin({ identity, target, intent: input.intent ?? undefined, lanes, sessionID: context.sessionID })
       return json({
@@ -174,11 +201,11 @@ export function createMmarTools(databaseOptions: DatabaseOptions = {}): Record<s
     },
   })
 
-  const complete = tool({
+  const complete = defineTool({
+    name: "mmar_complete",
     description: "Complete one MMAR review round in the current worktree or an explicit absolute local Git worktree root, with its fenced structured snapshot and exactly one terminal lane outcome for every effective lane.",
-    args: completeArgsSchema.shape,
-    async execute(args, context) {
-      const input = completeArgsSchema.parse(args)
+    args: completeArgs,
+    async execute(input, context) {
       const worktree = trustedWriteRepository(context, input.worktreePath)
       const repository = resolveRepositoryIdentity(worktree)
       const reviewStore = await getStore()
@@ -198,21 +225,21 @@ export function createMmarTools(databaseOptions: DatabaseOptions = {}): Record<s
     },
   })
 
-  const listReviews = tool({
+  const listReviews = defineTool({
+    name: "mmar_list_reviews",
     description: "List completed and in-progress MMAR reviews for the current worktree, or an explicit absolute local Git worktree root. Available to any agent with a valid context and session. Explicit paths intentionally widen model-facing read access beyond the OpenCode session root; no write or lock authority is granted.",
-    args: listReviewsArgsSchema.shape,
-    async execute(args, context) {
-      const input = listReviewsArgsSchema.parse(args)
+    args: listReviewsArgs,
+    async execute(input, context) {
       const repository = readRepository(context, input.worktreePath)
       return json((await getStore()).listScoped(repository))
     },
   })
 
-  const getFindings = tool({
+  const getFindings = defineTool({
+    name: "mmar_get_findings",
     description: "Retrieve a completed MMAR review round from the current worktree, or an explicit absolute local Git worktree root. Available to any agent with a valid context and session. Explicit paths intentionally widen model-facing read access beyond the OpenCode session root; no write or lock authority is granted.",
-    args: getFindingsArgsSchema.shape,
-    async execute(args, context) {
-      const input = getFindingsArgsSchema.parse(args)
+    args: getFindingsArgs,
+    async execute(input, context) {
       const repository = readRepository(context, input.worktreePath)
       const reviewStore = await getStore()
       reviewStore.assertReviewScope(input.reviewId, repository)
@@ -225,11 +252,11 @@ export function createMmarTools(databaseOptions: DatabaseOptions = {}): Record<s
     },
   })
 
-  const setFindingDisposition = tool({
+  const setFindingDisposition = defineTool({
+    name: "mmar_set_finding_disposition",
     description: "Set a finding disposition after an explicit user request without starting a review round. Normal agents and mmar_orchestrator may use this tool with a valid context and session. The tool uses the current worktree or an explicit absolute local Git worktree root. Canonical specialists cannot use it. Set `ignored` with a non-empty reason. Set `valid` without a reason.",
-    args: setFindingDispositionArgsSchema.shape,
-    async execute(args, context) {
-      const input = setFindingDispositionArgsSchema.parse(args)
+    args: setFindingDispositionArgs,
+    async execute(input, context) {
       const repository = authorizeDispositionRepository(context, input.worktreePath)
       const result = (await getStore()).setFindingDisposition({ ...input, scope: repository })
       return json(result)
