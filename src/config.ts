@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs"
-import { Model } from "@opencode/schema/model"
+import { Model } from "@opencode/plugin"
 import {
   DEFAULT_CONFIG,
   type ModelSelection,

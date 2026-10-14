@@ -1,7 +1,6 @@
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
-import { Agent } from "@opencode/schema/agent"
-import { Model } from "@opencode/schema/model"
+import { Agent, Model } from "@opencode/plugin"
 import { REVIEWER_KEYS, REVIEWER_REGISTRY, type MultireviewPluginConfig, type ReviewerKey, type ReviewerMetadata } from "./defaults.js"
 import { laneRegistry } from "./lanes.js"
 import { agentsDirectory } from "./paths.js"
