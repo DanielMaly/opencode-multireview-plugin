@@ -39,9 +39,7 @@
     "prepack": "npm run build"
   },
   "dependencies": {
-    "@opencode/plugin": "^2.0.26",
-    "commander": "^15.0.0",
-    "effect": "^4.0.0-rc.112"
+    "commander": "^15.0.0"
   },
   "keywords": [
     "opencode",
@@ -60,10 +58,24 @@
     "url": "https://github.com/DanielMaly/opencode-multireview-plugin/issues"
   },
   "devDependencies": {
+    "@opencode/plugin": "2.0.26",
     "@types/node": "^24.0.0",
     "auto-changelog": "^2.5.0",
+    "effect": "4.0.0-rc.112",
     "release-it": "^19.0.4",
     "typescript": "^5.9.3"
+  },
+  "peerDependencies": {
+    "@opencode/plugin": "^2.0.26",
+    "effect": "4.0.0-rc.112"
+  },
+  "peerDependenciesMeta": {
+    "@opencode/plugin": {
+      "optional": true
+    },
+    "effect": {
+      "optional": true
+    }
   },
   "release-it": {
     "git": {

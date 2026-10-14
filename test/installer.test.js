@@ -170,10 +170,18 @@ test("packed artifact contains the installed skill and installer inputs", () => 
   assert.ok(files.includes("dist/installer.js"))
 })
 
-test("packed artifact declares its runtime plugin dependency", () => {
+test("packed artifact declares optional OpenCode runtime peer dependencies", () => {
   const packageJson = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"))
-  assert.equal(packageJson.dependencies["@opencode/plugin"], "^2.0.26")
-  assert.equal(packageJson.devDependencies["@opencode/plugin"], undefined)
+  assert.equal(packageJson.dependencies["@opencode/plugin"], undefined)
+  assert.equal(packageJson.dependencies.effect, undefined)
+  assert.equal(packageJson.peerDependencies["@opencode/plugin"], "^2.0.26")
+  assert.equal(packageJson.peerDependencies.effect, "4.0.0-rc.112")
+  assert.deepEqual(packageJson.peerDependenciesMeta, {
+    "@opencode/plugin": { optional: true },
+    effect: { optional: true },
+  })
+  assert.equal(packageJson.devDependencies["@opencode/plugin"], "2.0.26")
+  assert.equal(packageJson.devDependencies.effect, "4.0.0-rc.112")
 })
 
 test("OpenCode discovers the installed MMAR skill and plugin agents in isolation", { skip: "requires a live OpenCode V2 binary" }, () => {
