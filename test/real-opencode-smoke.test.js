@@ -162,7 +162,7 @@ async function runHookSession({ project, fixture, agent, scenario, targetFile })
     const started = await startOpenCodeServer(resolved.bin, project, env)
     server = started.child
     const hostDirectory = realpathSync(project)
-    await waitForPlugin(started.port, `/api/plugin?${location(hostDirectory)}`, ({ source }) => source.type === "local" && source.path.includes("opencode-multireview-plugin"), started.output)
+    await waitForPlugin(started.port, `/api/plugin?${location(hostDirectory)}`, ({ source }) => source.type === "local" && source.path === pluginEntry, started.output)
     const sessionResponse = await fetch(`http://127.0.0.1:${started.port}/api/session`, {
       method: "POST",
       headers: { ...apiHeaders(), "content-type": "application/json" },
