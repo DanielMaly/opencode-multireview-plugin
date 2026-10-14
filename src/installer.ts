@@ -2,8 +2,9 @@ import { createHash, randomUUID } from "node:crypto"
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { basename, dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
+import { REVIEWER_REGISTRY, REVIEWER_KEYS } from "./defaults.js"
 import { resolveRepositoryIdentity } from "./repository.js"
-import { globalSkillPath, projectSkillPath, skillPath } from "./paths.js"
+import { globalAgentPath, globalSkillPath, projectAgentPath, projectSkillPath, skillPath } from "./paths.js"
 
 export type InstallMode = "global" | "project"
 
@@ -39,6 +40,11 @@ export function resolveInstallPath(mode: InstallMode, cwd = process.cwd()): stri
   return projectSkillPath(resolveRepositoryIdentity(cwd).rootPath)
 }
 
+function resolveAgentPath(mode: InstallMode, name: string, cwd: string): string {
+  if (mode === "global") return globalAgentPath(name)
+  return projectAgentPath(resolveRepositoryIdentity(cwd).rootPath, name)
+}
+
 function writeAtomically(path: string, content: string): void {
   const destination = resolve(path)
   const directory = dirname(destination)
@@ -71,27 +77,40 @@ function provenance(content: string): string {
   }, null, 2)}\n`
 }
 
+function agentStub(): string {
+  return `---\ndescription: MMAR agent managed by opencode-multireview-plugin\n---\n`
+}
+
+function installOwnedFile(path: string, desired: string, atomicWriter: AtomicWriter): InstallResult["status"] {
+  const sidecar = provenancePathFor(path)
+  if (!existsSync(path)) {
+    atomicWriter(sidecar, provenance(desired))
+    atomicWriter(path, desired)
+    return "installed"
+  }
+
+  const current = readFileSync(path, "utf8")
+  const owner = readProvenance(sidecar)
+  if (!owner || owner.packageName !== packageMetadata.name || owner.contentSha256 !== contentSha256(current)) return "preserved"
+  if (current === desired && owner.packageVersion === packageMetadata.version) return "unchanged"
+
+  atomicWriter(sidecar, provenance(desired))
+  atomicWriter(path, desired)
+  return "updated"
+}
+
 export function installSkill(mode: InstallMode, cwd = process.cwd(), atomicWriter: AtomicWriter = writeAtomically): InstallResult {
   const destination = resolveInstallPath(mode, cwd)
   const sidecar = provenancePathFor(destination)
   const desired = readFileSync(skillPath, "utf8")
-  const hasSkill = existsSync(destination)
-  if (!hasSkill) {
-    atomicWriter(sidecar, provenance(desired))
-    atomicWriter(destination, desired)
-    return { mode, skillPath: destination, provenancePath: sidecar, status: "installed", message: `Installed MMAR skill at ${destination}` }
+  const status = installOwnedFile(destination, desired, atomicWriter)
+  for (const key of REVIEWER_KEYS) {
+    const { name } = REVIEWER_REGISTRY[key]
+    installOwnedFile(resolveAgentPath(mode, name, cwd), agentStub(), atomicWriter)
   }
-
-  const current = readFileSync(destination, "utf8")
-  const owner = readProvenance(sidecar)
-  if (!owner || owner.packageName !== packageMetadata.name || owner.contentSha256 !== contentSha256(current)) {
-    return { mode, skillPath: destination, provenancePath: sidecar, status: "preserved", message: `Preserved modified or unowned MMAR skill at ${destination}` }
-  }
-  if (current === desired && owner.packageVersion === packageMetadata.version) {
-    return { mode, skillPath: destination, provenancePath: sidecar, status: "unchanged", message: `MMAR skill is current at ${destination}` }
-  }
-
-  atomicWriter(sidecar, provenance(desired))
-  atomicWriter(destination, desired)
-  return { mode, skillPath: destination, provenancePath: sidecar, status: "updated", message: `Updated MMAR skill at ${destination}` }
+  const message = status === "installed" ? `Installed MMAR skill at ${destination}`
+    : status === "updated" ? `Updated MMAR skill at ${destination}`
+      : status === "unchanged" ? `MMAR skill is current at ${destination}`
+        : `Preserved modified or unowned MMAR skill at ${destination}`
+  return { mode, skillPath: destination, provenancePath: provenancePathFor(destination), status, message }
 }

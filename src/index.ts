@@ -1,148 +1,128 @@
-import type { Config as OpenCodeConfig, Plugin } from "@opencode-ai/plugin"
+import { readFileSync } from "node:fs"
+import { Schema } from "effect"
+import { AbsolutePath, Skill } from "@opencode/schema"
+import { Plugin } from "@opencode/plugin"
 import { buildAgents } from "./agents.js"
 import { loadMultireviewConfig } from "./config.js"
 import type { MultireviewPluginOptions } from "./defaults.js"
 import { ReviewLifecycleHooks } from "./lifecycleHooks.js"
-import { appendBundledSkillPath, type OpenCodeConfigShape } from "./skillDiscovery.js"
+import { skillPath } from "./paths.js"
 import { PersistentReviewLifecycle, type ReviewLifecycle } from "./storage/lifecycle.js"
 import { mmarTools } from "./tools.js"
+import { validateBundledMmarSkill } from "./skillDiscovery.js"
 import { laneRegistry } from "./lanes.js"
 import { REVIEWER_REGISTRY } from "./defaults.js"
 
-type PermissionAction = "ask" | "allow" | "deny"
-type PermissionRules = Record<string, PermissionAction>
-type PluginConfigShape = OpenCodeConfig & {
-  permission?: PermissionAction | Record<string, unknown>
-  subagent_depth?: number
+const pluginId = "opencode-multireview-plugin"
+type OpenCodeToolContext = Parameters<Awaited<ReturnType<Plugin.Context["tool"]["list"]>>[number]["execute"]>[1]
+
+function modelReference(model: string, variant?: string): { providerID: string; id: string; variant?: string } {
+  const separator = model.indexOf("/")
+  if (separator === -1) throw new Error(`Invalid model reference "${model}"; expected "provider/model"`)
+  const providerID = model.slice(0, separator)
+  const id = model.slice(separator + 1)
+  return variant === undefined ? { providerID, id } : { providerID, id, variant }
 }
 
-const orchestratorName = REVIEWER_REGISTRY.coordinator.name
+// V2 renamed these V1 permission keys; agent frontmatter still uses the V1 names.
+const v2ActionNames: Record<string, string> = { task: "subagent", bash: "shell" }
 
-function specialistNames(): string[] {
-  return laneRegistry.map((lane) => lane.specialistAgent)
-}
+const isRecord = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value)
 
-function taskRules(task: unknown, names: string[]): PermissionRules {
-  const denials = Object.fromEntries(names.map((name) => [name, "deny" as const]))
-  if (typeof task === "string") return { "*": task as PermissionAction, ...denials }
-  if (task && typeof task === "object" && !Array.isArray(task)) {
-    const preserved = Object.fromEntries(Object.entries(task).filter(([key]) => !names.includes(key))) as PermissionRules
-    return { ...preserved, ...denials }
+function permissions(value: unknown): Array<{ action: string; resource: string; effect: "allow" | "deny" | "ask" }> {
+  const result: Array<{ action: string; resource: string; effect: "allow" | "deny" | "ask" }> = []
+  const add = (action: string, resource: string, effect: unknown) => {
+    if (effect === "allow" || effect === "deny" || effect === "ask") result.push({ action: v2ActionNames[action] ?? action, resource, effect })
   }
-  return denials
-}
-
-function restrictTopLevelTask(config: PluginConfigShape, names: string[]): void {
-  if (typeof config.permission === "string") {
-    config.permission = { "*": config.permission, task: taskRules(config.permission, names) }
-    return
+  if (typeof value === "string") add("*", "*", value)
+  if (!isRecord(value)) return result
+  for (const [action, setting] of Object.entries(value)) {
+    if (typeof setting === "string") add(action, "*", setting)
+    else if (isRecord(setting)) for (const [resource, effect] of Object.entries(setting)) add(action, resource, effect)
   }
-  const permission = config.permission && typeof config.permission === "object" ? config.permission : {}
-  config.permission = { ...permission, task: taskRules(permission.task, names) }
+  return result
 }
 
-function restrictAgentTaskOverrides(config: PluginConfigShape, names: string[]): void {
-  for (const [name, value] of Object.entries(config.agent ?? {})) {
-    if (name === orchestratorName || !value || typeof value !== "object" || Array.isArray(value)) continue
-    const agent = value as Record<string, unknown>
-    const permission = agent.permission
-    if (typeof permission === "string") {
-      agent.permission = { "*": permission, task: taskRules(permission, names) }
-      continue
-    }
-    if (!permission || typeof permission !== "object" || Array.isArray(permission)) continue
-    const rules = permission as Record<string, unknown>
-    if (!Object.hasOwn(rules, "task")) continue
-    agent.permission = { ...rules, task: taskRules(rules.task, names) }
-  }
+function toolPermissions(value: Record<string, boolean>): Array<{ action: string; resource: string; effect: "allow" | "deny" }> {
+  return Object.entries(value).map(([action, enabled]) => ({ action, resource: "*", effect: enabled ? "allow" : "deny" }))
 }
 
-function restrictOrchestrator(config: PluginConfigShape, names: string[]): void {
-  const agent = config.agent?.[orchestratorName] as Record<string, unknown> | undefined
-  if (!agent) return
-  const permission = typeof agent.permission === "string"
-    ? { "*": agent.permission }
-    : agent.permission && typeof agent.permission === "object" && !Array.isArray(agent.permission)
-      ? agent.permission as Record<string, unknown>
-      : {}
-  agent.permission = { ...permission, task: { "*": "deny", ...Object.fromEntries(names.map((name) => [name, "allow" as const])) } }
-}
-
-function ensureSubagentDepth(config: PluginConfigShape): void {
-  const depth = config.subagent_depth
-  config.subagent_depth = typeof depth === "number" && Number.isFinite(depth) ? Math.max(2, depth) : 2
-}
-
-function mergeAgent(existing: Record<string, unknown> | undefined, bundled: Record<string, unknown>, names: string[]): Record<string, unknown> {
-  const existingPermission = existing?.permission
-  const bundledPermission = bundled.permission as Record<string, unknown> | undefined
-  const permission = typeof existingPermission === "string"
-    ? { "*": existingPermission, task: taskRules(existingPermission, names), ...bundledPermission }
-    : {
-        ...(existingPermission as Record<string, unknown> | undefined),
-        ...bundledPermission,
-      }
-
-  return {
-    ...bundled,
-    ...existing,
-    mode: bundled.mode,
-    hidden: bundled.hidden === true,
-    permission,
-    tools: {
-      ...(existing?.tools as Record<string, boolean> | undefined),
-      ...(bundled.tools as Record<string, boolean> | undefined),
-    },
-  }
-}
-
-export function createMultireviewPlugin(lifecycle?: ReviewLifecycle): Plugin {
-  return async (ctx, pluginOptions) => {
-    const options = pluginOptions as MultireviewPluginOptions | undefined
-    const modelConfig = loadMultireviewConfig(options ?? {})
-    const lifecycleHooks = new ReviewLifecycleHooks(
-      lifecycle ?? new PersistentReviewLifecycle(),
-      async ({ event, reviewId, sessionID }) => {
-        await ctx.client.app.log({
-          body: {
-            service: "opencode-multireview-plugin",
-            level: "warn",
-            message: `MMAR review ${reviewId} needs attention after ${event}; completion remains available for session ${sessionID}.`,
-            extra: { event, reviewId, sessionID },
-          },
-          query: { directory: ctx.directory },
+function registerAgents(ctx: Plugin.Context, modelConfig: ReturnType<typeof loadMultireviewConfig>): Promise<void> {
+  const bundled = buildAgents(modelConfig)
+  const orchestrator = REVIEWER_REGISTRY.coordinator.name
+  // V1 restricted the orchestrator's task tool to exactly the specialist agents.
+  const orchestratorTasks = { "*": "deny", ...Object.fromEntries(laneRegistry.map((lane) => [lane.specialistAgent, "allow"])) }
+  return ctx.agent.transform((editor) => {
+    // The installer creates the agent files; V2 update() fills those discovered agents with plugin definitions.
+    for (const [id, definition] of Object.entries(bundled)) {
+      editor.update(id, (agent) => {
+        const permission = id === orchestrator ? { ...definition.permission, task: orchestratorTasks } : definition.permission
+        Object.assign(agent, {
+          id,
+          name: id,
+          description: definition.description,
+          mode: definition.mode,
+          hidden: definition.hidden === true,
+          model: modelReference(definition.model, definition.variant),
+          system: definition.prompt,
+          permissions: [...permissions(permission), ...toolPermissions(definition.tools)],
         })
-      },
-    )
-
-    return {
-      config: async (cfg: OpenCodeConfig) => {
-        const config = cfg as PluginConfigShape
-        Object.assign(config, appendBundledSkillPath(config as OpenCodeConfigShape))
-        const bundledAgents = buildAgents(modelConfig)
-        config.agent = config.agent ?? {}
-        for (const [name, bundled] of Object.entries(bundledAgents)) {
-          const existing = config.agent[name] as Record<string, unknown> | undefined
-          config.agent[name] = mergeAgent(existing, bundled, specialistNames())
-        }
-        const names = specialistNames()
-        restrictTopLevelTask(config, names)
-        restrictAgentTaskOverrides(config, names)
-        restrictOrchestrator(config, names)
-        ensureSubagentDepth(config)
-      },
-      tool: mmarTools,
-      "tool.execute.before": async (input, output) => {
-        lifecycleHooks.beforeTool(input, output.args)
-      },
-      event: async ({ event }) => {
-        await lifecycleHooks.event(event)
-      },
+      })
     }
-  }
+  }).then(() => undefined)
 }
 
-export const MultireviewPlugin: Plugin = createMultireviewPlugin()
+export function createMultireviewPlugin(lifecycle: ReviewLifecycle = new PersistentReviewLifecycle()) {
+  return Plugin.define({
+    id: pluginId,
+    async setup(ctx) {
+      const modelConfig = loadMultireviewConfig(ctx.options as MultireviewPluginOptions)
+      const lifecycleHooks = new ReviewLifecycleHooks(lifecycle, async ({ event, reviewId, sessionID }) => {
+        console.warn(`MMAR review ${reviewId} needs attention after ${event}; completion remains available for session ${sessionID}.`)
+      })
 
+      await ctx.tool.transform((editor) => {
+        for (const definition of Object.values(mmarTools)) {
+          editor.add({
+            ...definition,
+            execute: (input: unknown, toolContext: OpenCodeToolContext) => definition.execute(input, {
+              ...toolContext,
+              directory: ctx.location.directory,
+              worktree: ctx.location.project.directory,
+            }),
+          })
+        }
+      })
+      await registerAgents(ctx, modelConfig)
+      validateBundledMmarSkill()
+      const skillContent = readFileSync(skillPath, "utf8")
+      await ctx.skill.transform((editor) => {
+        if (!editor.get("mmar")) {
+          editor.add({ id: Schema.decodeSync(Skill.ID)("mmar"), name: Schema.decodeSync(Skill.Name)("MMAR"), description: "Run multi-model adversarial code review", path: Schema.decodeSync(AbsolutePath)(skillPath), content: skillContent })
+        }
+      })
+      await ctx.tool.hook("execute.before", (event) => {
+        lifecycleHooks.beforeTool({ tool: event.tool, sessionID: event.sessionID, callID: event.id }, event.input)
+      })
+
+      const controller = new AbortController()
+      let agentsRefreshed = false
+      void (async () => {
+        for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
+          if (event.type === "agent.updated" && !agentsRefreshed) {
+            agentsRefreshed = true
+            await registerAgents(ctx, modelConfig)
+          }
+          await lifecycleHooks.event(event)
+        }
+      })().catch((error) => {
+        if (!controller.signal.aborted) console.warn("Unable to consume MMAR OpenCode events", error)
+      })
+      return () => controller.abort()
+    },
+  })
+}
+
+export const MultireviewPlugin = createMultireviewPlugin()
 export default MultireviewPlugin
 export type { MultireviewPluginOptions }

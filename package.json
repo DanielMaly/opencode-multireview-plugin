@@ -1,6 +1,6 @@
 {
   "name": "opencode-multireview-plugin",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "OpenCode plugin bundling MMAR review agents and history tools.",
   "type": "module",
   "engines": {
@@ -20,6 +20,7 @@
   },
   "files": [
     "dist/",
+    "server.js",
     "assets/agents/",
     "assets/migrations/",
     "assets/skills/",
@@ -38,8 +39,10 @@
     "prepack": "npm run build"
   },
   "dependencies": {
-    "@opencode-ai/plugin": "^1.14.20",
-    "commander": "^15.0.0"
+    "@opencode/plugin": "^2.0.26",
+    "@opencode/schema": "^2.0.26",
+    "commander": "^15.0.0",
+    "effect": "^4.0.0-rc.112"
   },
   "keywords": [
     "opencode",

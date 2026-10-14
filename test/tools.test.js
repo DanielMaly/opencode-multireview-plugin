@@ -49,7 +49,7 @@ function validFinding(title = "Tool finding") {
 }
 
 function parse(output) {
-  return JSON.parse(output);
+  return JSON.parse(typeof output === "string" ? output : output.content);
 }
 
 async function completeTool(tools, args, context) {
@@ -62,17 +62,34 @@ async function completeTool(tools, args, context) {
 
 test("exposes the tool registry without model-controlled database or session arguments", () => {
   assert.deepEqual(Object.keys(mmarTools).sort(), ["mmar_begin", "mmar_complete", "mmar_get_findings", "mmar_list_reviews", "mmar_set_finding_disposition"]);
-  assert.deepEqual(Object.keys(mmarTools.mmar_begin.args).sort(), ["baseRef", "intent", "lanes", "requestScope", "target", "worktreePath"]);
-  assert.deepEqual(Object.keys(mmarTools.mmar_complete.args).sort(), [
+  const properties = (tool) => Object.keys(tool.input.fields);
+  assert.deepEqual(properties(mmarTools.mmar_begin).sort(), ["baseRef", "intent", "lanes", "requestScope", "target", "worktreePath"]);
+  assert.deepEqual(properties(mmarTools.mmar_complete).sort(), [
     "fencingToken", "ignoredFindings", "intent", "laneResults", "reviewId", "roundId", "uncertainties", "validFindings", "worktreePath",
   ]);
-  assert.deepEqual(Object.keys(mmarTools.mmar_list_reviews.args), ["worktreePath"]);
-  assert.deepEqual(Object.keys(mmarTools.mmar_get_findings.args).sort(), ["reviewId", "roundId", "worktreePath"]);
-  assert.deepEqual(Object.keys(mmarTools.mmar_set_finding_disposition.args).sort(), ["disposition", "findingId", "reason", "worktreePath"]);
-  for (const args of [mmarTools.mmar_begin.args, mmarTools.mmar_complete.args, mmarTools.mmar_list_reviews.args, mmarTools.mmar_get_findings.args, mmarTools.mmar_set_finding_disposition.args]) {
+  assert.deepEqual(properties(mmarTools.mmar_list_reviews), ["worktreePath"]);
+  assert.deepEqual(properties(mmarTools.mmar_get_findings).sort(), ["reviewId", "roundId", "worktreePath"]);
+  assert.deepEqual(properties(mmarTools.mmar_set_finding_disposition).sort(), ["disposition", "findingId", "reason", "worktreePath"]);
+  for (const args of [mmarTools.mmar_begin.input.fields, mmarTools.mmar_complete.input.fields, mmarTools.mmar_list_reviews.input.fields, mmarTools.mmar_get_findings.input.fields, mmarTools.mmar_set_finding_disposition.input.fields]) {
     for (const forbidden of ["databasePath", "sql", "shell", "sessionId", "sessionID", "intentContent"]) {
       assert.equal(Object.hasOwn(args, forbidden), false);
     }
+  }
+});
+
+test("trims minLength string inputs before execution", async () => {
+  const project = gitProject("opencode-mmar-tool-trim-");
+  try {
+    const review = parse(await mmarTools.mmar_begin.execute({
+      target: { kind: "custom", changeset: "  review-scope  ", label: "  Review scope  " },
+      baseRef: "  HEAD  ",
+      requestScope: "  test scope  ",
+    }, context(project)));
+    assert.equal(review.requestScope, "test scope");
+    assert.equal(review.target.key, "review-scope");
+    assert.equal(review.target.label, "Review scope");
+  } finally {
+    rmSync(project, { recursive: true, force: true });
   }
 });
 
@@ -315,9 +332,9 @@ test("rejects invalid and out-of-scope retrievals with explicit completed-round 
       () => tools.mmar_get_findings.execute({ reviewId: pending.reviewId, roundId: "00000000-0000-0000-0000-000000000000" }, context(projectA)),
       /Unknown round 00000000-0000-0000-0000-000000000000/,
     );
-    await assert.rejects(() => tools.mmar_get_findings.execute({ reviewId: "not-a-uuid" }, context(projectA)), /invalid|expected/i);
-    await assert.rejects(() => tools.mmar_get_findings.execute({ reviewId: pending.reviewId, roundId: "not-a-uuid" }, context(projectA)), /invalid|expected/i);
-    await assert.rejects(() => tools.mmar_list_reviews.execute({ extra: true }, context(projectA)), /unrecognized|unknown|invalid/i);
+    await assert.rejects(() => tools.mmar_get_findings.execute({ reviewId: "not-a-uuid" }, context(projectA)), /Expected|Missing key/);
+    await assert.rejects(() => tools.mmar_get_findings.execute({ reviewId: pending.reviewId, roundId: "not-a-uuid" }, context(projectA)), /Expected|Missing key/);
+    await assert.rejects(() => tools.mmar_list_reviews.execute({ extra: true }, context(projectA)), /excess property/);
     await assert.rejects(() => tools.mmar_get_findings.execute({ reviewId: pending.reviewId }, context(projectB)), /project scope/);
     await assert.rejects(() => tools.mmar_list_reviews.execute({}, { ...context(projectA), directory: outside }), /outside/);
     await assert.rejects(() => tools.mmar_get_findings.execute({ reviewId: pending.reviewId }, { ...context(projectA), directory: outside }), /outside/);
@@ -480,10 +497,10 @@ test("rejects malformed payloads and untrusted, empty, or out-of-worktree contex
   mkdirSync(nested);
   const tools = createMmarTools({ databasePath: join(directory, "reviews.sqlite") });
   try {
-    await assert.rejects(() => tools.mmar_begin.execute({ target: { kind: "custom" } }, context(directory)), /invalid|expected/i);
+    await assert.rejects(() => tools.mmar_begin.execute({ target: { kind: "custom" } }, context(directory)), /Expected|Missing key/);
     await assert.rejects(() => tools.mmar_begin.execute({ ...beginArgs(), worktreePath: join(directory, "missing") }, context(directory)), /does not exist/);
-    await assert.rejects(() => completeTool(tools, { reviewId: "not-an-id" }, context(directory)), /invalid|expected/i);
-    await assert.rejects(() => completeTool(tools, { reviewId: "00000000-0000-0000-0000-000000000000", roundId: "00000000-0000-0000-0000-000000000000", fencingToken: "00000000-0000-0000-0000-000000000000", databasePath: directory }, context(directory)), /unrecognized|unknown|invalid/i);
+    await assert.rejects(() => completeTool(tools, { reviewId: "not-an-id" }, context(directory)), /Expected|Missing key/);
+    await assert.rejects(() => completeTool(tools, { reviewId: "00000000-0000-0000-0000-000000000000", roundId: "00000000-0000-0000-0000-000000000000", fencingToken: "00000000-0000-0000-0000-000000000000", databasePath: directory }, context(directory)), /excess property/);
     await assert.rejects(() => tools.mmar_begin.execute(beginArgs(), context(directory, specialistAgentFor("correctness"))), /only to mmar_orchestrator/);
     await assert.rejects(() => tools.mmar_begin.execute(beginArgs(), { agent: "mmar_orchestrator", directory: "", worktree: "", sessionID: "session-a" }), /directory and worktree/);
     await assert.rejects(() => tools.mmar_begin.execute(beginArgs(), { agent: "mmar_orchestrator", directory: outside, worktree: directory, sessionID: "session-a" }), /outside/);
@@ -592,7 +609,7 @@ test("sets finding dispositions through allowed callers and rejects specialists 
     }
     await assert.rejects(
       () => tools.mmar_set_finding_disposition.execute({ findingId: 0, disposition: "valid" }, context(project, normalAgent)),
-      /positive integer|expected number to be >0/,
+      /greater than or equal to 1/,
     );
     await assert.rejects(
       () => tools.mmar_set_finding_disposition.execute({ findingId: finding.id, disposition: "ignored" }, context(project, normalAgent)),
@@ -612,7 +629,7 @@ test("sets finding dispositions through allowed callers and rejects specialists 
     );
     await assert.rejects(
       () => tools.mmar_set_finding_disposition.execute({ findingId: finding.id, disposition: "valid", extra: true }, context(project, normalAgent)),
-      /unrecognized|unknown|invalid/i,
+      /excess property/,
     );
     await assert.rejects(
       () => tools.mmar_set_finding_disposition.execute({ findingId: finding.id, disposition: "valid" }, { directory: project, worktree: project, sessionID: "session-a" }),

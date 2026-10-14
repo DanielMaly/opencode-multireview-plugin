@@ -44,7 +44,7 @@ function completeStore(store, request) {
 }
 
 function error(sessionID) {
-  return { type: "session.error", properties: sessionID === undefined ? {} : { sessionID } }
+  return { type: "session.execution.failed", data: sessionID === undefined ? {} : { sessionID } }
 }
 
 test("guards specialist dispatches by the active session lock and permits unrelated tasks", () => {
@@ -61,10 +61,28 @@ test("guards specialist dispatches by the active session lock and permits unrela
     assert.doesNotThrow(() => hooks.beforeTool(taskInput(owner), { subagent_type: "mmar_correctness" }))
     assert.throws(() => hooks.beforeTool(taskInput(contender), { subagent_type: "mmar_correctness" }), /active review lock/)
     assert.doesNotThrow(() => hooks.beforeTool(taskInput(owner), { subagent_type: "other_agent" }))
+    // V2 dispatches through the `subagent` tool with an `agent` field.
+    assert.throws(() => hooks.beforeTool({ tool: "subagent", sessionID: contender, callID: "c" }, { agent: "mmar_correctness" }), /active review lock/)
+    assert.doesNotThrow(() => hooks.beforeTool({ tool: "subagent", sessionID: owner, callID: "c" }, { agent: "mmar_correctness" }))
     assert.equal(lifecycle.activeReviewForSession(contender), undefined)
 
     completeStore(store, { reviewId: review.reviewId, roundId: review.roundId, fencingToken: review.fencingToken })
     assert.throws(() => hooks.beforeTool(taskInput(owner), { subagent_type: "mmar_correctness" }), /active review lock/)
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test("records a diagnostic for the legacy session.error event with properties.sessionID", async () => {
+  const { directory, databasePath } = temporaryDatabase()
+  try {
+    const store = new ReviewStore({ databasePath })
+    const lifecycle = new PersistentReviewLifecycle({ databasePath })
+    const diagnostics = []
+    const hooks = new ReviewLifecycleHooks(lifecycle, (diagnostic) => diagnostics.push(diagnostic))
+    const review = begin(store, "legacy-session")
+    await hooks.event({ type: "session.error", properties: { sessionID: "legacy-session" } })
+    assert.deepEqual(diagnostics, [{ event: "session.error", reviewId: review.reviewId, sessionID: "legacy-session" }])
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }

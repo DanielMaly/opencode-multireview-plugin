@@ -24,6 +24,15 @@ export function globalSkillPath(options: { home?: string; xdgConfigHome?: string
   return join(configHome, "opencode", "skills", "mmar", "SKILL.md")
 }
 
+export function globalAgentPath(name: string, options: { home?: string; xdgConfigHome?: string } = {}): string {
+  const configHome = options.xdgConfigHome ?? (options.home ? join(options.home, ".config") : process.env.XDG_CONFIG_HOME || join(homedir(), ".config"))
+  return join(configHome, "opencode", "agents", `${name}.md`)
+}
+
 export function projectSkillPath(projectRoot: string): string {
   return join(projectRoot, ".opencode", "skills", "mmar", "SKILL.md")
+}
+
+export function projectAgentPath(projectRoot: string, name: string): string {
+  return join(projectRoot, ".opencode", "agents", `${name}.md`)
 }

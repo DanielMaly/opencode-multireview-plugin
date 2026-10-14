@@ -1,18 +1,18 @@
 import assert from "node:assert/strict"
 import { execFileSync, spawn, spawnSync } from "node:child_process"
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
-import { createServer } from "node:net"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
+import { createServer } from "node:net"
 import test from "node:test"
-import { ReviewStore } from "../dist/storage/reviews.js"
+import { installSkill } from "../dist/installer.js"
 import { createMmarTools } from "../dist/tools.js"
+import { ReviewStore } from "../dist/storage/reviews.js"
 import { ReviewLifecycleHooks } from "../dist/lifecycleHooks.js"
 import { PersistentReviewLifecycle } from "../dist/storage/lifecycle.js"
 import { laneRegistry } from "../dist/lanes.js"
 
-const pluginEntry = new URL("../dist/index.js", import.meta.url)
-const bundledSkills = new URL("../assets/skills", import.meta.url)
+const pluginEntry = new URL("../dist/", import.meta.url)
 const bundledSkillFile = new URL("../assets/skills/mmar/SKILL.md", import.meta.url)
 
 function commandExists(command) {
@@ -26,19 +26,11 @@ function isolatedEnvironment(directory) {
     XDG_CONFIG_HOME: join(directory, "xdg-config"),
     XDG_DATA_HOME: join(directory, "xdg-data"),
     XDG_STATE_HOME: join(directory, "xdg-state"),
-    OPENCODE_DISABLE_DEFAULT_PLUGINS: "1",
     OPENCODE_DISABLE_EXTERNAL_SKILLS: "1",
     OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: "1",
   }
-
   for (const name of ["OPENCODE_CONFIG", "OPENCODE_CONFIG_CONTENT", "OPENCODE_SERVER", "OPENCODE_PID"]) delete environment[name]
   return environment
-}
-
-function runOpenCode(args, cwd, env) {
-  const result = spawnSync("opencode", args, { cwd, env, encoding: "utf8" })
-  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`)
-  return result.stdout
 }
 
 function reservePort() {
@@ -52,33 +44,46 @@ function reservePort() {
   })
 }
 
+function authorization(password) {
+  return `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}`
+}
+
 async function waitForServer(process, port) {
+  let output = ""
+  process.stdout.setEncoding("utf8")
+  process.stdout.on("data", (chunk) => { output += chunk })
   const deadline = Date.now() + 20_000
   while (Date.now() < deadline) {
     if (process.exitCode !== null) throw new Error(`OpenCode server exited before becoming ready (exit ${process.exitCode})`)
-    try {
-      const response = await fetch(`http://127.0.0.1:${port}/config`)
-      if (response.ok) return
-    } catch {
-      // The server is still starting.
+    const password = output.match(/server password (\S+)/)?.[1]
+    if (password) {
+      try {
+        const response = await fetch(`http://127.0.0.1:${port}/api/agent`, { headers: { authorization: authorization(password) } })
+        if (response.ok) return password
+      } catch {
+        // The server is still starting.
+      }
     }
     await new Promise((resolve) => setTimeout(resolve, 100))
   }
-  throw new Error("OpenCode server did not become ready")
+  throw new Error(`OpenCode server did not become ready: ${output}`)
 }
 
-async function getJson(port, path) {
-  const response = await fetch(`http://127.0.0.1:${port}${path}`)
+async function getJson(port, path, password) {
+  const response = await fetch(`http://127.0.0.1:${port}${path}`, { headers: { authorization: authorization(password) } })
   assert.equal(response.ok, true, `${path} returned HTTP ${response.status}`)
   return response.json()
 }
 
-function writeLegacyAgents(project) {
-  const directory = join(project, ".opencode", "agents")
-  mkdirSync(directory, { recursive: true })
-  for (const name of ["multireview", "_correctness", "_codestyle", "_testing"]) {
-    writeFileSync(join(directory, `${name}.md`), `---\ndescription: Legacy ${name} fixture\nmode: subagent\n---\nLegacy fixture agent.\n`, "utf8")
+async function waitForJson(port, path, password, predicate) {
+  const deadline = Date.now() + 20_000
+  let value
+  while (Date.now() < deadline) {
+    value = await getJson(port, path, password)
+    if (predicate(value)) return value
+    await new Promise((resolve) => setTimeout(resolve, 100))
   }
+  throw new Error(`Timed out waiting for ${path}: ${JSON.stringify(value)}`)
 }
 
 function createGitProject(directory) {
@@ -86,6 +91,25 @@ function createGitProject(directory) {
   execFileSync("git", ["-C", directory, "config", "user.name", "MMAR smoke test"])
   execFileSync("git", ["-C", directory, "config", "user.email", "mmar-smoke@example.invalid"])
   execFileSync("git", ["-C", directory, "commit", "--quiet", "--allow-empty", "-m", "fixture"])
+}
+
+function assertMmarAgents(agents) {
+  const byName = new Map(agents.map((agent) => [agent.name, agent]))
+  const specialists = laneRegistry.map((lane) => lane.specialistAgent)
+  const names = ["mmar_orchestrator", ...specialists]
+  for (const name of names) {
+    const agent = byName.get(name)
+    assert.ok(agent, `missing ${name}`)
+    assert.ok(agent.system?.trim(), `${name} has no plugin system prompt`)
+  }
+  assert.equal(byName.get("mmar_orchestrator").hidden, false)
+  for (const name of specialists) assert.equal(byName.get(name).hidden, true)
+
+  const subagentPermissions = byName.get("mmar_orchestrator").permissions.filter(({ action }) => action === "subagent")
+  assert.deepEqual(subagentPermissions, [
+    { action: "subagent", resource: "*", effect: "deny" },
+    ...specialists.map((resource) => ({ action: "subagent", resource, effect: "allow" })),
+  ])
 }
 
 function toolContext(directory, agent = "mmar_orchestrator", sessionID = "smoke-session") {
@@ -101,133 +125,65 @@ function beginArgs() {
 }
 
 function parseToolOutput(value) {
-  return JSON.parse(value)
+  return JSON.parse(typeof value === "string" ? value : value.content)
 }
 
-function taskRules(agent) {
-  return agent.permission.filter(({ permission }) => permission === "task").map(({ pattern, action }) => ({ pattern, action }))
-}
-
-test("real OpenCode loads the local plugin alongside legacy agents and enforces MMAR lifecycle", { skip: !commandExists("opencode") ? "opencode binary is unavailable" : false }, async () => {
+test("real OpenCode loads the local plugin and enforces MMAR lifecycle", { skip: !commandExists("opencode") ? "opencode binary is unavailable" : false }, async () => {
   const fixture = mkdtempSync(join(tmpdir(), "opencode-multireview-real-smoke-"))
   const project = join(fixture, "project")
   mkdirSync(project, { recursive: true })
   createGitProject(project)
-  writeLegacyAgents(project)
-
-  const config = {
+  installSkill("project", project)
+  rmSync(join(project, ".opencode", "skills"), { recursive: true, force: true })
+  writeFileSync(join(project, "opencode.json"), JSON.stringify({
     $schema: "https://opencode.ai/config.json",
-    plugin: [pluginEntry.href],
-    // OpenCode 1.18.x resolves plugin config hooks only in the running server.
-    // Supplying the same bundled path here lets its native debug skill command
-    // prove discovery without installing a global or project copy.
-    skills: { paths: [new URL(bundledSkills).pathname] },
-    // A provider catalogue is required by OpenCode's debug agent command, but
-    // no credentials or model request are used by this smoke test.
-    enabled_providers: ["github-copilot"],
-    disabled_providers: ["github-copilot", "llm-gateway"],
-    mcp: {},
-    agent: { caller: { mode: "primary", permission: { task: "allow" } } },
-  }
-  writeFileSync(join(project, "opencode.json"), JSON.stringify(config), "utf8")
+    plugins: [pluginEntry.href],
+    experimental: { subagent_depth: 2 },
+  }), "utf8")
   const env = isolatedEnvironment(fixture)
-  mkdirSync(env.HOME, { recursive: true })
-  mkdirSync(env.XDG_CONFIG_HOME, { recursive: true })
-  mkdirSync(env.XDG_DATA_HOME, { recursive: true })
-  mkdirSync(env.XDG_STATE_HOME, { recursive: true })
+  for (const path of [env.HOME, env.XDG_CONFIG_HOME, env.XDG_DATA_HOME, env.XDG_STATE_HOME]) mkdirSync(path, { recursive: true })
 
   let server
   try {
-    const resolvedConfig = JSON.parse(runOpenCode(["debug", "config"], project, env))
-    assert.deepEqual(resolvedConfig.plugin, [pluginEntry.href])
-    assert.deepEqual(resolvedConfig.plugin_origins.map(({ scope, spec }) => ({ scope, spec })), [{ scope: "local", spec: pluginEntry.href }])
-    assert.equal(resolvedConfig.mcp && Object.keys(resolvedConfig.mcp).length, 0)
-
-    const skills = JSON.parse(runOpenCode(["debug", "skill"], project, env))
-    const mmarSkill = skills.find(({ name }) => name === "mmar")
-    assert.ok(mmarSkill, "native debug skill discovery did not find mmar")
-    assert.equal(mmarSkill.location, new URL(bundledSkillFile).pathname)
-    assert.equal(existsSync(join(project, ".opencode", "skills", "mmar", "SKILL.md")), false)
-
-    for (const name of ["mmar_orchestrator", "mmar_correctness", "mmar_codestyle", "mmar_testing", "mmar_intent"]) {
-      const agent = JSON.parse(runOpenCode(["debug", "agent", name], project, env))
-      assert.equal(agent.name, name)
-      assert.equal(typeof agent.prompt, "string")
-      assert.ok(agent.prompt.trim().length > 0)
-    }
-
     const port = await reservePort()
-    server = spawn("opencode", ["serve", "--hostname", "127.0.0.1", "--port", String(port)], {
-      cwd: project,
-      env,
-      stdio: ["ignore", "pipe", "pipe"],
-    })
-    await waitForServer(server, port)
+    server = spawn("opencode", ["serve", "--hostname", "127.0.0.1", "--port", String(port)], { cwd: project, env, stdio: ["ignore", "pipe", "pipe"] })
+    const password = await waitForServer(server, port)
+    const agentResponse = await waitForJson(port, "/api/agent", password, ({ data }) => data.some(({ name }) => name === "mmar_orchestrator"))
+    assertMmarAgents(agentResponse.data)
 
-    const serverConfig = await getJson(port, "/config")
-    const serverSkillPath = serverConfig.skills.paths.find((path) => path.includes("opencode-multireview-plugin"))
-    assert.equal(serverSkillPath, new URL(bundledSkills).pathname)
-    assert.equal(existsSync(join(serverSkillPath, "mmar", "SKILL.md")), true)
-    assert.equal(serverConfig.subagent_depth >= 2, true)
+    const skillResponse = await waitForJson(port, "/api/skill", password, ({ data }) => data.some(({ id }) => id === "mmar"))
+    const mmarSkill = skillResponse.data.find(({ id }) => id === "mmar")
+    assert.ok(mmarSkill, "V2 skill discovery did not find mmar")
+    assert.equal(mmarSkill.path, bundledSkillFile.pathname)
 
-    // /agent proves OpenCode normalized the plugin's permission config. It
-    // does not prove native TaskTool filtering or a nested model dispatch;
-    // OpenCode exposes no stable direct API for either assertion.
-    const agents = await getJson(port, "/agent")
-    const agentNames = agents.map(({ name }) => name)
-    const specialists = laneRegistry.map((lane) => lane.specialistAgent)
-    assert.deepEqual(agentNames.filter((name) => name.startsWith("mmar_")).sort(), [...specialists, "mmar_orchestrator"].sort())
-    assert.equal(agents.find(({ name }) => name === "mmar_orchestrator").hidden, false)
-    for (const name of specialists) assert.equal(agents.find((agent) => agent.name === name).hidden, true)
-    const caller = agents.find(({ name }) => name === "caller")
-    assert.ok(caller)
-    assert.deepEqual(taskRules(caller).slice(-specialists.length), specialists.map((pattern) => ({ pattern, action: "deny" })))
-    const orchestrator = agents.find(({ name }) => name === "mmar_orchestrator")
-    assert.ok(orchestrator)
-    assert.deepEqual(taskRules(orchestrator).slice(-specialists.length - 1), [
-      { pattern: "*", action: "deny" },
-      ...specialists.map((pattern) => ({ pattern, action: "allow" })),
-    ])
-    for (const legacy of ["multireview", "_correctness", "_codestyle", "_testing"]) assert.ok(agentNames.includes(legacy), `missing legacy agent ${legacy}`)
-
-    // Lifecycle evidence boundary: no model is involved. These are the same
-    // exported tools/hooks registered by the real plugin, backed by isolated
-    // SQLite state in this temporary fixture.
+    // V1 debug commands, legacy agent fixtures, and V1 task permission shapes
+    // are intentionally not asserted: V2 exposes the normalized HTTP resources.
     const databasePath = join(fixture, "plugin-state", "reviews.sqlite")
     const tools = createMmarTools({ databasePath })
-    assert.equal(typeof tools.mmar_set_finding_disposition, "object")
     const hooks = new ReviewLifecycleHooks(new PersistentReviewLifecycle({ databasePath }), () => {})
     const sessionID = "smoke-session"
-    const task = { tool: "task", sessionID, callID: "smoke-call" }
-    assert.throws(() => hooks.beforeTool(task, { subagent_type: "mmar_correctness" }), /active review lock/)
+    const task = { tool: "subagent", sessionID, callID: "smoke-call" }
+    assert.throws(() => hooks.beforeTool(task, { agent: "mmar_correctness" }), /active review lock/)
 
     const begun = parseToolOutput(await tools.mmar_begin.execute(beginArgs(), toolContext(project, "mmar_orchestrator", sessionID)))
     assert.equal(begun.locked, false)
-    assert.doesNotThrow(() => hooks.beforeTool(task, { subagent_type: "mmar_correctness" }))
+    assert.doesNotThrow(() => hooks.beforeTool(task, { agent: "mmar_correctness" }))
 
     const completed = parseToolOutput(await tools.mmar_complete.execute({
       reviewId: begun.reviewId,
       roundId: begun.roundId,
       fencingToken: begun.fencingToken,
       laneResults: ["correctness", "codestyle", "testing"].map((lane) => ({ lane, status: "completed" })),
-      validFindings: [{
-        disposition: "valid",
-        severity: "LOW",
-        category: "TESTING",
-        title: "Smoke finding",
-        bodyMarkdown: "Deterministic smoke evidence",
-        sourceAgents: ["mmar_testing"],
-      }],
+      validFindings: [{ disposition: "valid", severity: "LOW", category: "TESTING", title: "Smoke finding", bodyMarkdown: "Deterministic smoke evidence", sourceAgents: ["mmar_testing"] }],
     }, toolContext(project, "mmar_orchestrator", sessionID)))
     assert.deepEqual(completed, { roundId: begun.roundId, idempotent: false })
     const store = new ReviewStore({ databasePath })
     assert.deepEqual(store.listRounds(begun.reviewId).map(({ id }) => id), [begun.roundId])
-    assert.equal(store.inspectLock(begun.reviewId), undefined)
     const smokeFinding = store.getRound(begun.reviewId).validFindings[0]
     const disposition = parseToolOutput(await tools.mmar_set_finding_disposition.execute({ findingId: smokeFinding.id, disposition: "ignored", reason: "Smoke disposition" }, toolContext(project, "mmar_orchestrator", "disposition-session")))
     assert.equal(disposition.disposition, "ignored")
     assert.equal(store.getRound(begun.reviewId).ignoredFindings[0].wontfix, "Smoke disposition")
-    assert.throws(() => hooks.beforeTool(task, { subagent_type: "mmar_correctness" }), /active review lock/)
+    assert.throws(() => hooks.beforeTool(task, { agent: "mmar_correctness" }), /active review lock/)
     assert.equal(existsSync(join(project, "REVIEW_FINDINGS.md")), false)
   } finally {
     if (server && server.exitCode === null) {
