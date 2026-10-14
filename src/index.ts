@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs"
-import { Agent, Plugin, Skill } from "@opencode/plugin"
+import { Plugin, Skill } from "@opencode/plugin"
 import type { ToolContext } from "@opencode/plugin/promise/tool"
 import { buildAgents } from "./agents.js"
 import { loadMultireviewConfig } from "./config.js"
@@ -18,7 +18,7 @@ function registerAgents(ctx: Plugin.Context, modelConfig: ReturnType<typeof load
     // V2 update() creates missing agents; config/file agents with the same id are layered on top by the host.
     for (const [id, definition] of Object.entries(bundled)) {
       editor.update(id, (agent) => {
-        agent.id = Agent.ID.make(id)
+        agent.id = definition.id
         agent.name = definition.name
         agent.description = definition.description
         agent.mode = definition.mode
@@ -83,9 +83,7 @@ export function createMultireviewPlugin(lifecycle: ReviewLifecycle = new Persist
         } catch (error) {
           if (!controller.signal.aborted) console.warn("Unable to consume MMAR OpenCode events", error)
         }
-      })().catch((error) => {
-        if (!controller.signal.aborted) console.warn("Unexpected MMAR event consumer failure", error)
-      })
+      })()
       return () => controller.abort()
     },
   })
