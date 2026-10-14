@@ -186,7 +186,7 @@ test("packed artifact declares optional OpenCode runtime peer dependencies", () 
 
 const openCodeV2 = resolveOpenCodeV2()
 
-test("OpenCode discovers the installed MMAR skill and plugin agents in isolation", { skip: openCodeV2.reason }, async () => {
+test("OpenCode discovers the installed MMAR skill and plugin agents in isolation", { skip: openCodeV2.reason, timeout: 90_000 }, async () => {
   const directory = temporaryDirectory()
   const installDirectory = join(directory, "install")
   let server
@@ -214,7 +214,8 @@ test("OpenCode discovers the installed MMAR skill and plugin agents in isolation
     const projectConfig = configs.find(({ type, path }) => type === "document" && path.endsWith("opencode.json"))
     assert.ok(projectConfig)
     assert.ok(projectConfig.info.plugins.includes(pluginDirectory))
-    const installedPlugin = await waitForPlugin(started.port, `/api/plugin?location[directory]=${encodeURIComponent(hostDirectory)}`, ({ source }) => source.type === "local" && source.path.startsWith(realpathSync(pluginDirectory)), started.output)
+    const installedEntry = realpathSync(join(pluginDirectory, "server.js"))
+    const installedPlugin = await waitForPlugin(started.port, `/api/plugin?location[directory]=${encodeURIComponent(hostDirectory)}`, ({ source }) => source.type === "local" && source.path === installedEntry, started.output)
     const serverAgents = await getJson(started.port, `/api/agent?location[directory]=${encodeURIComponent(hostDirectory)}`)
     assert.deepEqual(installedPlugin.state, { status: "active" }, JSON.stringify(installedPlugin))
 
@@ -225,14 +226,17 @@ test("OpenCode discovers the installed MMAR skill and plugin agents in isolation
       assert.ok(typeof agent.system === "string" && agent.system.trim(), `${agent.id} has no system prompt`)
     }
 
-    const skillResponse = await fetch(`http://127.0.0.1:${started.port}/api/skill?location[directory]=${encodeURIComponent(hostDirectory)}`, { headers: apiHeaders() })
+    const skillResponse = await fetch(`http://127.0.0.1:${started.port}/api/skill?location[directory]=${encodeURIComponent(hostDirectory)}`, { headers: apiHeaders(), signal: AbortSignal.timeout(10_000) })
     const skillBody = await skillResponse.text()
     assert.equal(skillResponse.ok, true, `skill endpoint returned HTTP ${skillResponse.status}: ${skillBody}`)
     const responseBody = JSON.parse(skillBody)
     const skills = Array.isArray(responseBody) ? responseBody : responseBody.data ?? responseBody
     assert.ok(skills.some(({ id, name }) => id === "mmar" || name?.toLowerCase() === "mmar"), JSON.stringify(skills))
   } finally {
-    await stopOpenCodeServer(server)
-    rmSync(directory, { recursive: true, force: true })
+    try {
+      await stopOpenCodeServer(server)
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
   }
 })

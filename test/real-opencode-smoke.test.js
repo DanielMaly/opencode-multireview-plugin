@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { createServer } from "node:http"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
+import { fileURLToPath } from "node:url"
 import test from "node:test"
 import { ReviewStore } from "../dist/storage/reviews.js"
 import { createMmarTools } from "../dist/tools.js"
@@ -14,6 +15,10 @@ import { apiHeaders, getJson, isolatedEnvironment, resolveOpenCodeV2, startOpenC
 
 const resolved = resolveOpenCodeV2()
 const agentNames = ["mmar_orchestrator", ...laneRegistry.map(({ specialistAgent }) => specialistAgent)]
+const repositoryRoot = realpathSync(fileURLToPath(new URL("..", import.meta.url)))
+const pluginEntry = join(repositoryRoot, "server.js")
+const bundledAgentIds = ["mmar_orchestrator", "mmar_correctness", "mmar_codestyle", "mmar_testing", "mmar_intent"]
+const utilityAgentIds = ["title", "compaction", "summary"]
 
 function createGitProject(directory) {
   execFileSync("git", ["init", "--quiet", directory])
@@ -65,64 +70,67 @@ function sendCompletion(response, toolCall, text = "Done.") {
   response.end("data: [DONE]\n\n")
 }
 
-function toolArguments(tool, project, targetFile) {
-  const properties = tool.function.parameters?.properties ?? {}
-  const values = {}
-  for (const [name, schema] of Object.entries(properties)) {
-    const lower = name.toLowerCase()
-    if (lower.includes("agent")) values[name] = "mmar_correctness"
-    else if (lower.includes("file") || lower === "path") values[name] = targetFile
-    else if (lower.includes("prompt")) values[name] = "Run the specialist"
-    else if (lower.includes("description")) values[name] = "Hook enforcement test"
-    else if (lower.includes("old") || lower.includes("search")) values[name] = "original content"
-    else if (lower.includes("new") || lower.includes("content") || lower.includes("patch")) values[name] = "modified by tool"
-    else if (schema.type === "string") values[name] = "test"
-    else if (schema.type === "boolean") values[name] = false
-    else if (schema.type === "number" || schema.type === "integer") values[name] = 1
-    else if (schema.type === "array") values[name] = []
-    else if (schema.type === "object") values[name] = {}
-  }
-  return values
-}
-
-async function startMockLlm(project, scenario, targetFile) {
+async function startMockLlm(scenario, targetFile) {
   const requests = []
+  const errors = []
   const server = createServer(async (request, response) => {
-    const chunks = []
-    for await (const chunk of request) chunks.push(chunk)
-    const body = JSON.parse(Buffer.concat(chunks).toString("utf8"))
-    const tools = body.tools ?? []
-    requests.push({ tools: tools.map(({ function: fn }) => fn.name), body })
-    const lastUserMessage = [...(body.messages ?? [])].reverse().find(({ role }) => role === "user")?.content ?? ""
-    const isSummaryRequest = typeof lastUserMessage === "string" && /MUST summarize the conversation/.test(lastUserMessage)
-    const target = scenario === "edit"
-      ? tools.find(({ function: fn }) => ["edit", "write", "patch"].includes(fn.name))
-      : tools.find(({ function: fn }) => fn.name === "subagent")
-    const hasToolReply = body.messages?.some(({ role }) => role === "tool")
-    if (!hasToolReply && !isSummaryRequest && target) sendCompletion(response, { name: target.function.name, arguments: toolArguments(target, project, targetFile) })
-    else if (isSummaryRequest) sendCompletion(response, undefined, "## Objective\n- Exercise the live plugin hook.\n\n## Requirements\n- Use the local scripted model.\n\n## Decisions\n- (none)\n\n## Work State\n### Completed\n- Started the session.\n\n### Active\n- Trigger the test tool call.\n\n### Blocked\n- (none)\n\n## Next Move\n1. Continue the test.\n\n## Relevant Files\n- (none)")
-    else sendCompletion(response)
+    try {
+      const chunks = []
+      for await (const chunk of request) chunks.push(chunk)
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8"))
+      const tools = body.tools ?? []
+      const names = tools.map(({ function: fn }) => fn.name)
+      requests.push(names)
+      const lastUserMessage = [...(body.messages ?? [])].reverse().find(({ role }) => role === "user")?.content ?? ""
+      const isSummaryRequest = typeof lastUserMessage === "string" && /MUST summarize the conversation/.test(lastUserMessage)
+      let scriptedTool
+      if (scenario === "edit") scriptedTool = "edit"
+      if (scenario === "subagent") scriptedTool = "subagent"
+      if (scenario === "list") scriptedTool = "mmar_list_reviews"
+      const hasToolReply = body.messages?.some(({ role }) => role === "tool")
+      const shouldScriptTool = !hasToolReply && !isSummaryRequest
+      const scriptedToolIsAdvertised = scriptedTool !== undefined && names.includes(scriptedTool)
+      if (shouldScriptTool && scriptedToolIsAdvertised) {
+        let args = {}
+        if (scriptedTool === "edit") args = { path: targetFile, oldString: "original content", newString: "modified by tool", replaceAll: false }
+        if (scriptedTool === "subagent") args = { agent: "mmar_correctness", description: "Hook enforcement test", prompt: "Run the specialist", model: "mock/scripted", sessionID: "test", background: false }
+        sendCompletion(response, { name: scriptedTool, arguments: args })
+      } else if (isSummaryRequest) {
+        sendCompletion(response, undefined, "## Objective\n- Exercise the live plugin hook.\n\n## Requirements\n- Use the local scripted model.\n\n## Decisions\n- (none)\n\n## Work State\n### Completed\n- Started the session.\n\n### Active\n- Trigger the test tool call.\n\n### Blocked\n- (none)\n\n## Next Move\n1. Continue the test.\n\n## Relevant Files\n- (none)")
+      } else sendCompletion(response)
+    } catch (error) {
+      errors.push(String(error))
+      if (!response.headersSent) response.writeHead(500, { "content-type": "text/plain" })
+      response.end("mock request failed")
+    }
   })
   await new Promise((resolve, reject) => {
     server.once("error", reject)
     server.listen(0, "127.0.0.1", resolve)
   })
-  return { server, port: server.address().port, requests }
+  return { server, port: server.address().port, requests, errors }
 }
 
 async function stopMockLlm(server) {
   if (!server?.listening) return
   server.closeAllConnections()
-  await new Promise((resolve) => server.close(resolve))
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("Mock LLM server shutdown timed out")), 5_000)
+    server.close((error) => {
+      clearTimeout(timer)
+      if (error) reject(error)
+      else resolve()
+    })
+  })
 }
 
 async function runHookSession({ project, fixture, agent, scenario, targetFile }) {
-  const mock = await startMockLlm(project, scenario, targetFile)
+  const mock = await startMockLlm(scenario, targetFile)
   let server
   try {
     const config = {
       $schema: "https://opencode.ai/config.json",
-      plugins: [new URL("..", import.meta.url).pathname.replace(/\/$/, "")],
+      plugins: [repositoryRoot],
       model: "mock/scripted",
       providers: {
         mock: {
@@ -140,15 +148,12 @@ async function runHookSession({ project, fixture, agent, scenario, targetFile })
         },
       },
       agents: {
-        title: { model: "mock/scripted" },
-        compaction: { model: "mock/scripted" },
-        summary: { model: "mock/scripted" },
+        ...Object.fromEntries(utilityAgentIds.map((id) => [id, { model: "mock/scripted" }])),
+        ...Object.fromEntries(bundledAgentIds.map((id) => [id, { model: "mock/scripted" }])),
         [agent]: {
           model: "mock/scripted",
           mode: "primary",
-          permissions: scenario === "edit"
-            ? [{ action: "edit", resource: "*", effect: "allow" }]
-            : [{ action: "subagent", resource: "*", effect: "allow" }],
+          permissions: [{ action: scenario === "edit" ? "edit" : "subagent", resource: "*", effect: "allow" }],
         },
       },
     }
@@ -162,6 +167,7 @@ async function runHookSession({ project, fixture, agent, scenario, targetFile })
       method: "POST",
       headers: { ...apiHeaders(), "content-type": "application/json" },
       body: JSON.stringify({ location: { directory: hostDirectory }, agent }),
+      signal: AbortSignal.timeout(10_000),
     })
     const sessionData = await responseJson(sessionResponse, "session create", started.output.join(""))
     const session = sessionData.data ?? sessionData
@@ -169,34 +175,39 @@ async function runHookSession({ project, fixture, agent, scenario, targetFile })
       method: "POST",
       headers: { ...apiHeaders(), "content-type": "application/json" },
       body: JSON.stringify({ text: "Perform the requested test action now." }),
+      signal: AbortSignal.timeout(10_000),
     })
     const promptText = await promptResponse.text()
     assert.ok(promptResponse.ok, `prompt failed: HTTP ${promptResponse.status}: ${promptText}; server=${started.output.join("")}`)
-    const waitResponse = await fetch(`http://127.0.0.1:${started.port}/api/experimental/session/${session.id}/wait`, { method: "POST", headers: apiHeaders() })
+    const waitResponse = await fetch(`http://127.0.0.1:${started.port}/api/experimental/session/${session.id}/wait`, { method: "POST", headers: apiHeaders(), signal: AbortSignal.timeout(30_000) })
     const waitText = await waitResponse.text()
     assert.ok(waitResponse.ok, `session wait failed: HTTP ${waitResponse.status}: ${waitText}; server=${started.output.join("")}`)
-    const messageResponse = await fetch(`http://127.0.0.1:${started.port}/api/session/${session.id}/message`, { headers: apiHeaders() })
+    const messageResponse = await fetch(`http://127.0.0.1:${started.port}/api/session/${session.id}/message`, { headers: apiHeaders(), signal: AbortSignal.timeout(10_000) })
     const messageData = await responseJson(messageResponse, "message fetch", started.output.join(""))
     const messages = messageData.data ?? messageData
     const toolParts = messages.flatMap((message) => message.type === "assistant" || message.role === "assistant"
       ? (message.content ?? []).filter(({ type }) => type === "tool")
       : [])
-    console.log(`MMAR hook session ${agent} tool names:`, JSON.stringify([...new Set(mock.requests.flatMap(({ tools }) => tools))]))
+    console.log(`MMAR hook session ${agent} tool names:`, JSON.stringify([...new Set(mock.requests.flat())]))
+    assert.deepEqual(mock.errors, [])
     return { toolParts, messages, requests: mock.requests, serverOutput: started.output.join("") }
   } finally {
-    await stopOpenCodeServer(server)
-    await stopMockLlm(mock.server)
+    try {
+      await stopOpenCodeServer(server)
+    } finally {
+      await stopMockLlm(mock.server)
+    }
   }
 }
 
-test("real OpenCode V2 loads the local plugin and enforces MMAR lifecycle", { skip: resolved.reason }, async () => {
+test("real OpenCode V2 loads the local plugin and enforces MMAR lifecycle", { skip: resolved.reason, timeout: 90_000 }, async () => {
   const fixture = mkdtempSync(join(tmpdir(), "opencode-multireview-real-smoke-"))
   const project = join(fixture, "project")
   mkdirSync(project, { recursive: true })
   createGitProject(project)
   writeFileSync(join(project, "opencode.json"), JSON.stringify({
     $schema: "https://opencode.ai/config.json",
-    plugins: [new URL("..", import.meta.url).pathname.replace(/\/$/, "")],
+    plugins: [repositoryRoot],
     agents: {
       mmar_correctness: {
         permissions: [{ action: "edit", resource: "*", effect: "allow" }],
@@ -213,8 +224,8 @@ test("real OpenCode V2 loads the local plugin and enforces MMAR lifecycle", { sk
     const configs = await getJson(started.port, `/api/config?${location(hostDirectory)}`)
     const projectConfig = configs.find(({ type, path }) => type === "document" && path.endsWith("opencode.json"))
     assert.ok(projectConfig)
-    assert.ok(projectConfig.info.plugins.includes(new URL("..", import.meta.url).pathname.replace(/\/$/, "")))
-    const localPlugin = await waitForPlugin(started.port, `/api/plugin?${location(hostDirectory)}`, ({ source }) => source.type === "local" && source.path.includes("opencode-multireview-plugin"), started.output)
+    assert.ok(projectConfig.info.plugins.includes(repositoryRoot))
+    const localPlugin = await waitForPlugin(started.port, `/api/plugin?${location(hostDirectory)}`, ({ source }) => source.type === "local" && source.path === pluginEntry, started.output)
     const serverAgents = await getJson(started.port, `/api/agent?${location(hostDirectory)}`)
     assert.deepEqual(localPlugin.state, { status: "active" }, JSON.stringify(localPlugin))
     console.log("MMAR real-host plugin status:", JSON.stringify(localPlugin))
@@ -250,7 +261,7 @@ test("real OpenCode V2 loads the local plugin and enforces MMAR lifecycle", { sk
     // execute.before, not these declarative permissions, enforces MMAR edit restrictions.
 
     let skillRegistered = false
-    const skillResponse = await fetch(`http://127.0.0.1:${started.port}/api/skill?${location(hostDirectory)}`, { headers: apiHeaders() })
+    const skillResponse = await fetch(`http://127.0.0.1:${started.port}/api/skill?${location(hostDirectory)}`, { headers: apiHeaders(), signal: AbortSignal.timeout(10_000) })
     if (skillResponse.ok) {
       const responseBody = await skillResponse.json()
       const skills = Array.isArray(responseBody) ? responseBody : responseBody.data ?? responseBody
@@ -304,12 +315,15 @@ test("real OpenCode V2 loads the local plugin and enforces MMAR lifecycle", { sk
     assert.equal(existsSync(join(project, "REVIEW_FINDINGS.md")), false)
     if (skillRegistered) console.log("MMAR real-host skill: registered via /api/skill")
   } finally {
-    await stopOpenCodeServer(server)
-    rmSync(fixture, { recursive: true, force: true })
+    try {
+      await stopOpenCodeServer(server)
+    } finally {
+      rmSync(fixture, { recursive: true, force: true })
+    }
   }
 })
 
-test("real OpenCode V2 hook rejects edit escalation through a live session", { skip: resolved.reason }, async () => {
+test("real OpenCode V2 hook rejects edit escalation through a live session", { skip: resolved.reason, timeout: 90_000 }, async () => {
   const fixture = mkdtempSync(join(tmpdir(), "opencode-multireview-hook-edit-"))
   const project = join(fixture, "project")
   mkdirSync(project, { recursive: true })
@@ -329,7 +343,7 @@ test("real OpenCode V2 hook rejects edit escalation through a live session", { s
   }
 })
 
-test("real OpenCode V2 hook rejects specialist dispatch from a non-orchestrator", { skip: resolved.reason }, async () => {
+test("real OpenCode V2 hook rejects specialist dispatch from a non-orchestrator", { skip: resolved.reason, timeout: 90_000 }, async () => {
   const fixture = mkdtempSync(join(tmpdir(), "opencode-multireview-hook-subagent-"))
   const project = join(fixture, "project")
   mkdirSync(project, { recursive: true })
@@ -341,6 +355,22 @@ test("real OpenCode V2 hook rejects specialist dispatch from a non-orchestrator"
     assert.equal(dispatch.state.status, "error")
     assert.match(dispatch.state.error.message, /Only mmar_orchestrator may dispatch canonical MMAR specialists/)
     console.log("MMAR subagent hook error:", dispatch.state.error.message)
+  } finally {
+    rmSync(fixture, { recursive: true, force: true })
+  }
+})
+
+test("real OpenCode V2 executes mmar_list_reviews through a live session", { skip: resolved.reason, timeout: 90_000 }, async () => {
+  const fixture = mkdtempSync(join(tmpdir(), "opencode-multireview-hook-list-"))
+  const project = join(fixture, "project")
+  mkdirSync(project, { recursive: true })
+  createGitProject(project)
+  try {
+    const result = await runHookSession({ project, fixture, agent: "mmar_orchestrator", scenario: "list", targetFile: project })
+    const listTool = result.toolParts.find(({ name }) => name === "mmar_list_reviews")
+    assert.ok(listTool, `no list_reviews tool call: tools=${JSON.stringify(result.requests)}`)
+    assert.equal(listTool.state.status, "completed")
+    assert.deepEqual(JSON.parse(listTool.state.content[0].text), [])
   } finally {
     rmSync(fixture, { recursive: true, force: true })
   }
