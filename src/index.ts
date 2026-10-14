@@ -1,5 +1,8 @@
 import { readFileSync } from "node:fs"
 import { Plugin } from "@opencode/plugin"
+import type { ToolContext } from "@opencode/plugin/promise/tool"
+import { Agent } from "@opencode/schema/agent"
+import { Skill } from "@opencode/schema/skill"
 import { buildAgents } from "./agents.js"
 import { loadMultireviewConfig } from "./config.js"
 import type { MultireviewPluginOptions } from "./defaults.js"
@@ -8,59 +11,23 @@ import { skillPath } from "./paths.js"
 import { PersistentReviewLifecycle, type ReviewLifecycle } from "./storage/lifecycle.js"
 import { mmarTools } from "./tools.js"
 import { validateBundledMmarSkill } from "./skillDiscovery.js"
-import { laneRegistry } from "./lanes.js"
-import { REVIEWER_REGISTRY } from "./defaults.js"
 
 const pluginId = "opencode-multireview-plugin"
-type OpenCodeToolContext = Parameters<Awaited<ReturnType<Plugin.Context["tool"]["list"]>>[number]["execute"]>[1]
-
-function modelReference(model: string, variant?: string): { providerID: string; id: string; variant?: string } {
-  const separator = model.indexOf("/")
-  if (separator === -1) throw new Error(`Invalid model reference "${model}"; expected "provider/model"`)
-  const providerID = model.slice(0, separator)
-  const id = model.slice(separator + 1)
-  return variant === undefined ? { providerID, id } : { providerID, id, variant }
-}
-
-function permissions(value: unknown): Array<{ action: string; resource: string; effect: "allow" | "deny" | "ask" }> {
-  const result: Array<{ action: string; resource: string; effect: "allow" | "deny" | "ask" }> = []
-  const add = (action: string, resource: string, effect: unknown) => {
-    if (effect === "allow" || effect === "deny" || effect === "ask") result.push({ action: action === "task" ? "subagent" : action === "bash" ? "shell" : action, resource, effect })
-  }
-  if (typeof value === "string") add("*", "*", value)
-  else if (value && typeof value === "object" && !Array.isArray(value)) {
-    for (const [action, setting] of Object.entries(value)) {
-      if (typeof setting === "string") add(action, "*", setting)
-      else if (setting && typeof setting === "object" && !Array.isArray(setting)) for (const [resource, effect] of Object.entries(setting)) add(action, resource, effect)
-    }
-  }
-  return result
-}
-
-function toolPermissions(value: Record<string, boolean>): Array<{ action: string; resource: string; effect: "allow" | "deny" }> {
-  return Object.entries(value).map(([action, enabled]) => ({ action, resource: "*", effect: enabled ? "allow" : "deny" }))
-}
 
 function registerAgents(ctx: Plugin.Context, modelConfig: ReturnType<typeof loadMultireviewConfig>): Promise<void> {
   const bundled = buildAgents(modelConfig)
-  const orchestrator = REVIEWER_REGISTRY.coordinator.name
-  // V1 restricted the orchestrator's task tool to exactly the specialist agents.
-  const orchestratorTasks = { "*": "deny", ...Object.fromEntries(laneRegistry.map((lane) => [lane.specialistAgent, "allow"])) }
   return ctx.agent.transform((editor) => {
     // V2 update() creates missing agents; config/file agents with the same id are layered on top by the host.
     for (const [id, definition] of Object.entries(bundled)) {
       editor.update(id, (agent) => {
-        const permission = id === orchestrator ? { ...definition.permission, task: orchestratorTasks } : definition.permission
-        Object.assign(agent, {
-          id,
-          name: id,
-          description: definition.description,
-          mode: definition.mode,
-          hidden: definition.hidden === true,
-          model: modelReference(definition.model, definition.variant),
-          system: definition.prompt,
-          permissions: [...permissions(permission), ...toolPermissions(definition.tools)],
-        })
+        agent.id = Agent.ID.make(id)
+        agent.name = definition.name
+        agent.description = definition.description
+        agent.mode = definition.mode
+        agent.hidden = definition.hidden
+        agent.model = definition.model
+        agent.system = definition.system
+        agent.permissions = definition.permissions
       })
     }
   }).then(() => undefined)
@@ -79,12 +46,12 @@ export function createMultireviewPlugin(lifecycle: ReviewLifecycle = new Persist
         for (const definition of Object.values(mmarTools)) {
           editor.add({
             ...definition,
-            execute: (input: unknown, toolContext: OpenCodeToolContext) => definition.execute(input, {
+            execute: (input: unknown, toolContext: ToolContext) => definition.execute(input, {
               ...toolContext,
               directory: ctx.location.directory,
               worktree: ctx.location.project.directory,
             }),
-          } as never)
+          })
         }
       })
       await registerAgents(ctx, modelConfig)
@@ -92,18 +59,34 @@ export function createMultireviewPlugin(lifecycle: ReviewLifecycle = new Persist
       const skillContent = readFileSync(skillPath, "utf8")
       await ctx.skill.transform((editor) => {
         if (!editor.get("mmar")) {
-          editor.add({ id: "mmar" as never, name: "MMAR" as never, description: "Run multi-model adversarial code review", path: skillPath as never, content: skillContent })
+          editor.add({
+            id: Skill.ID.make("mmar"),
+            name: Skill.Name.make("MMAR"),
+            description: "Run multi-model adversarial code review",
+            path: skillPath as Skill.Info["path"],
+            content: skillContent,
+          })
         }
       })
       await ctx.tool.hook("execute.before", (event) => {
-        lifecycleHooks.beforeTool({ tool: event.tool, sessionID: event.sessionID, callID: event.id }, event.input)
+        lifecycleHooks.beforeTool({ tool: event.tool, sessionID: event.sessionID, callID: event.id }, event.input, event.agent)
       })
 
       const controller = new AbortController()
       void (async () => {
-        for await (const event of ctx.event.subscribe({ signal: controller.signal })) await lifecycleHooks.event(event)
+        try {
+          for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
+            try {
+              await lifecycleHooks.event(event)
+            } catch (error) {
+              console.warn("Unable to process MMAR OpenCode event", error)
+            }
+          }
+        } catch (error) {
+          if (!controller.signal.aborted) console.warn("Unable to consume MMAR OpenCode events", error)
+        }
       })().catch((error) => {
-        if (!controller.signal.aborted) console.warn("Unable to consume MMAR OpenCode events", error)
+        if (!controller.signal.aborted) console.warn("Unexpected MMAR event consumer failure", error)
       })
       return () => controller.abort()
     },

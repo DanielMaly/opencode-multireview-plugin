@@ -169,8 +169,8 @@ test("native specialist dispatch is rejected for an omitted lane", () => {
     const lifecycle = new PersistentReviewLifecycle({ databasePath })
     const hooks = new ReviewLifecycleHooks(lifecycle, () => {})
     const review = store.begin({ identity: identity(), target: { kind: "custom", key: "dispatch", label: "dispatch" }, lanes: ["correctness"], sessionID: "session" })
-    assert.doesNotThrow(() => hooks.beforeTool({ tool: "task", sessionID: "session", callID: "call" }, { subagent_type: "mmar_correctness" }))
-    assert.throws(() => hooks.beforeTool({ tool: "task", sessionID: "session", callID: "call" }, { subagent_type: "mmar_testing" }), /outside the active review lanes/)
+    assert.doesNotThrow(() => hooks.beforeTool({ tool: "subagent", sessionID: "session", callID: "call" }, { agent: "mmar_correctness" }, "mmar_orchestrator"))
+    assert.throws(() => hooks.beforeTool({ tool: "subagent", sessionID: "session", callID: "call" }, { agent: "mmar_testing" }, "mmar_orchestrator"), /outside the active review lanes/)
     store.complete({ ...review, laneResults: [{ lane: "correctness", status: "completed" }] })
   } finally { rmSync(directory, { recursive: true, force: true }) }
 })
@@ -186,7 +186,7 @@ test("legacy active locks retain unrestricted specialist dispatch", () => {
     database.prepare("DELETE FROM review_round_lanes WHERE review_id = ?").run(review.reviewId)
     database.close()
     const hooks = new ReviewLifecycleHooks(new PersistentReviewLifecycle({ databasePath }), () => {})
-    assert.doesNotThrow(() => hooks.beforeTool({ tool: "task", sessionID: "session", callID: "call" }, { subagent_type: "mmar_testing" }))
+    assert.doesNotThrow(() => hooks.beforeTool({ tool: "subagent", sessionID: "session", callID: "call" }, { agent: "mmar_testing" }, "mmar_orchestrator"))
     store.complete({ ...review })
   } finally { rmSync(directory, { recursive: true, force: true }) }
 })
@@ -224,7 +224,7 @@ test("accepts a registry-defined future lane through dispatch and completion", (
     const store = new ReviewStore({ databasePath })
     const review = begin(store, ["future"])
     const hooks = new ReviewLifecycleHooks(new PersistentReviewLifecycle({ databasePath }), () => {})
-    assert.doesNotThrow(() => hooks.beforeTool({ tool: "task", sessionID: "session", callID: "call" }, { subagent_type: "mmar_future" }))
+    assert.doesNotThrow(() => hooks.beforeTool({ tool: "subagent", sessionID: "session", callID: "call" }, { agent: "mmar_future" }, "mmar_orchestrator"))
     store.complete({ ...review, laneResults: results(["future"]) })
     assert.deepEqual(store.getRound(review.reviewId, review.roundId).lanes, ["future"])
   } finally {
@@ -276,8 +276,8 @@ test("registered lanes have installed specialists and executable metadata", () =
     assert.equal(metadata?.name, lane.specialistAgent)
     assert.equal(metadata?.mode, "subagent")
     assert.equal(agent?.mode, "subagent")
-    assert.equal(typeof agent?.prompt, "string")
-    assert.ok(agent?.prompt.trim().length > 0)
+    assert.equal(typeof agent?.system, "string")
+    assert.ok(agent?.system.trim().length > 0)
   }
 })
 

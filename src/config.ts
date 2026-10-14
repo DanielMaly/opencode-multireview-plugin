@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs"
+import { Model } from "@opencode/schema/model"
 import {
   DEFAULT_CONFIG,
   type ModelSelection,
@@ -31,8 +32,17 @@ function validateReviewerKey(path: string, key: string): asserts key is Reviewer
 }
 
 function normalizeModel(path: string, value: unknown): ModelSelection {
+  const validateReference = (model: string): void => {
+    try {
+      Model.Ref.parse(model)
+    } catch {
+      throw configError(path, `invalid model reference "${model}"; expected "provider/model"`)
+    }
+  }
+
   if (typeof value === "string") {
     if (value.trim() === "") throw configError(path, "model must be a non-empty string")
+    validateReference(value)
     return { model: value }
   }
 
@@ -43,6 +53,7 @@ function normalizeModel(path: string, value: unknown): ModelSelection {
   if (typeof value.model !== "string" || value.model.trim() === "") {
     throw configError(path, "model entry must have a non-empty model string")
   }
+  validateReference(value.model)
 
   if (value.variant !== undefined && (typeof value.variant !== "string" || value.variant.trim() === "")) {
     throw configError(path, "variant must be a non-empty string when provided")
