@@ -3,10 +3,10 @@ import { execFileSync, spawnSync } from "node:child_process"
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { tmpdir } from "node:os"
-import { pathToFileURL } from "node:url"
 import test from "node:test"
 import { contentSha256, installSkill, provenancePathFor } from "../dist/installer.js"
 import { globalSkillPath, projectSkillPath, skillPath } from "../dist/paths.js"
+import { apiHeaders, getJson, isolatedEnvironment, resolveOpenCodeV2, startOpenCodeServer, stopOpenCodeServer, waitForPlugin } from "./opencode-v2-helpers.js"
 
 const cli = new URL("../dist/cli.js", import.meta.url)
 
@@ -184,14 +184,15 @@ test("packed artifact declares optional OpenCode runtime peer dependencies", () 
   assert.equal(packageJson.devDependencies.effect, "4.0.0-rc.112")
 })
 
-test("OpenCode discovers the installed MMAR skill and plugin agents in isolation", { skip: "requires a live OpenCode V2 binary" }, () => {
+const openCodeV2 = resolveOpenCodeV2()
+
+test("OpenCode discovers the installed MMAR skill and plugin agents in isolation", { skip: openCodeV2.reason }, async () => {
   const directory = temporaryDirectory()
   const installDirectory = join(directory, "install")
-  const xdgConfigHome = join(directory, "xdg")
+  let server
   try {
     execFileSync("git", ["init", "--quiet"], { cwd: directory })
     execFileSync("git", ["-c", "user.name=MMAR test", "-c", "user.email=mmar-test@example.invalid", "commit", "--quiet", "--allow-empty", "-m", "fixture"], { cwd: directory })
-    installSkill("project", directory)
     mkdirSync(installDirectory)
     const packed = JSON.parse(execFileSync("npm", ["pack", "--json", "--pack-destination", directory], { encoding: "utf8" }))[0]
     execFileSync("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", join(directory, packed.filename)], {
@@ -199,33 +200,39 @@ test("OpenCode discovers the installed MMAR skill and plugin agents in isolation
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
     })
-    const pluginPath = join(installDirectory, "node_modules", "opencode-multireview-plugin", "dist", "index.js")
+    const pluginDirectory = join(installDirectory, "node_modules", "opencode-multireview-plugin")
     writeFileSync(join(directory, "opencode.json"), JSON.stringify({
       "$schema": "https://opencode.ai/config.json",
-      "plugins": [pathToFileURL(pluginPath).href],
+      "plugins": [pluginDirectory],
     }))
-    const env = {
-      ...process.env,
-      HOME: join(directory, "home"),
-      XDG_CONFIG_HOME: xdgConfigHome,
-      OPENCODE_DISABLE_DEFAULT_PLUGINS: "1",
-      OPENCODE_DISABLE_EXTERNAL_SKILLS: "1",
-      OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: "1",
-    }
-    delete env.OPENCODE_CONFIG
-    delete env.OPENCODE_CONFIG_CONTENT
-    const skill = spawnSync("opencode", ["debug", "skill"], { cwd: directory, env, encoding: "utf8" })
-    assert.equal(skill.status, 0, `${skill.stdout}\n${skill.stderr}`)
-    assert.match(skill.stdout, /"name": "mmar"/)
+    const env = isolatedEnvironment(directory)
+    const started = await startOpenCodeServer(openCodeV2.bin, directory, env)
+    server = started.child
+    const hostDirectory = realpathSync(directory)
 
-    const agent = spawnSync("opencode", ["debug", "agent", "mmar_orchestrator"], { cwd: directory, env, encoding: "utf8" })
-    assert.equal(agent.status, 0, `${agent.stdout}\n${agent.stderr}`)
-    assert.match(agent.stdout, /mmar_orchestrator/)
+    const configs = await getJson(started.port, `/api/config?location[directory]=${encodeURIComponent(hostDirectory)}`)
+    const projectConfig = configs.find(({ type, path }) => type === "document" && path.endsWith("opencode.json"))
+    assert.ok(projectConfig)
+    assert.ok(projectConfig.info.plugins.includes(pluginDirectory))
+    const installedPlugin = await waitForPlugin(started.port, `/api/plugin?location[directory]=${encodeURIComponent(hostDirectory)}`, ({ source }) => source.type === "local" && source.path.startsWith(realpathSync(pluginDirectory)), started.output)
+    const serverAgents = await getJson(started.port, `/api/agent?location[directory]=${encodeURIComponent(hostDirectory)}`)
+    assert.deepEqual(installedPlugin.state, { status: "active" }, JSON.stringify(installedPlugin))
+
+    const agents = serverAgents
+    const bundledNames = agents.filter(({ id }) => id.startsWith("mmar_")).map(({ id }) => id).sort()
+    assert.deepEqual(bundledNames, ["mmar_codestyle", "mmar_correctness", "mmar_intent", "mmar_orchestrator", "mmar_testing"])
+    for (const agent of agents.filter(({ id }) => id.startsWith("mmar_"))) {
+      assert.ok(typeof agent.system === "string" && agent.system.trim(), `${agent.id} has no system prompt`)
+    }
+
+    const skillResponse = await fetch(`http://127.0.0.1:${started.port}/api/skill?location[directory]=${encodeURIComponent(hostDirectory)}`, { headers: apiHeaders() })
+    const skillBody = await skillResponse.text()
+    assert.equal(skillResponse.ok, true, `skill endpoint returned HTTP ${skillResponse.status}: ${skillBody}`)
+    const responseBody = JSON.parse(skillBody)
+    const skills = Array.isArray(responseBody) ? responseBody : responseBody.data ?? responseBody
+    assert.ok(skills.some(({ id, name }) => id === "mmar" || name?.toLowerCase() === "mmar"), JSON.stringify(skills))
   } finally {
+    await stopOpenCodeServer(server)
     rmSync(directory, { recursive: true, force: true })
   }
 })
-
-function commandExists(command) {
-  return spawnSync("which", [command], { stdio: "ignore" }).status === 0
-}
