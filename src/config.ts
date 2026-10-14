@@ -32,17 +32,19 @@ function validateReviewerKey(path: string, key: string): asserts key is Reviewer
 }
 
 function normalizeModel(path: string, value: unknown): ModelSelection {
-  const validateReference = (model: string): void => {
+  const validateSelection = (model: string, variant?: string): void => {
     try {
-      Model.Ref.parse(model)
+      const parsed = Model.Ref.parse(model)
+      if (variant !== undefined) Model.Ref.parse(`${parsed.providerID}/${parsed.id}#${variant}`)
     } catch {
-      throw configError(path, `invalid model reference "${model}"; expected "provider/model"`)
+      const suffix = variant === undefined ? "" : `#${variant}`
+      throw configError(path, `invalid model selection "${model}${suffix}"; expected "provider/model" with a valid variant`)
     }
   }
 
   if (typeof value === "string") {
     if (value.trim() === "") throw configError(path, "model must be a non-empty string")
-    validateReference(value)
+    validateSelection(value)
     return { model: value }
   }
 
@@ -53,11 +55,10 @@ function normalizeModel(path: string, value: unknown): ModelSelection {
   if (typeof value.model !== "string" || value.model.trim() === "") {
     throw configError(path, "model entry must have a non-empty model string")
   }
-  validateReference(value.model)
-
   if (value.variant !== undefined && (typeof value.variant !== "string" || value.variant.trim() === "")) {
     throw configError(path, "variant must be a non-empty string when provided")
   }
+  validateSelection(value.model, value.variant)
 
   return value.variant === undefined ? { model: value.model } : { model: value.model, variant: value.variant }
 }

@@ -187,3 +187,14 @@ test("rejects unknown tuple reviewer keys", () => {
     /unknown reviewer key/,
   );
 });
+
+test("rejects invalid variants at the reviewer config boundary", () => {
+  const dir = mkdtempSync(join(tmpdir(), "multireview-plugin-"));
+  const configPath = join(dir, "config.json");
+  writeFileSync(configPath, JSON.stringify({ models: { correctness: { model: "provider/model", variant: "a#b" } } }), "utf8");
+  try {
+    assert.throws(() => loadMultireviewConfig({ configPath }), /models\.correctness.*invalid model selection/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
