@@ -1,5 +1,15 @@
 # Changelog
 
+## [v1.0.1](https://github.com/DanielMaly/opencode-multireview-plugin/compare/v1.0.0...v1.0.1) (2026-08-19)
+
+- Allow explicit worktrees for MMAR tools [`a682bd4`](https://github.com/DanielMaly/opencode-multireview-plugin/commit/a682bd44a4ea708fa891ff59e2899f91251da930)
+- Release v1.0.1 [`a64541d`](https://github.com/DanielMaly/opencode-multireview-plugin/commit/a64541d2a3146759f2bad187991fd13efea7ac93)
+
+## [v1.0.0](https://github.com/DanielMaly/opencode-multireview-plugin/compare/v1.0.0-4...v1.0.0) (2026-08-18)
+
+- Support direct human invocation of mmar_orchestrator without an envelope [`1041591`](https://github.com/DanielMaly/opencode-multireview-plugin/commit/104159178925a970b3f1ba9e189c9802ad15a4e9)
+- Release v1.0.0 [`65ecd94`](https://github.com/DanielMaly/opencode-multireview-plugin/commit/65ecd9468517ffcb1074658b423b115e235cd3b4)
+
 ## [v1.0.0-4](https://github.com/DanielMaly/opencode-multireview-plugin/compare/v1.0.0-3...v1.0.0-4) (2026-08-18)
 
 - Expose finding disposition tool [`#22`](https://github.com/DanielMaly/opencode-multireview-plugin/pull/22)
