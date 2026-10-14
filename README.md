@@ -32,7 +32,9 @@ Plugin registration is required for reviews: it supplies the orchestrator agents
 
 ### Versions
 
-Version 2.x requires OpenCode V2: use the `plugins` key and `experimental.subagent_depth`. For OpenCode V1, use version 1.x (`npm install opencode-multireview-plugin@1`), the `plugin` key, and `subagent_depth`. In 2.x the plugin no longer sets `subagent_depth` automatically, so set it to `2`; it also no longer denies specialist dispatch from other agents, though the review lock still guards dispatch.
+Version 2.x requires OpenCode V2. Version 1.x supports OpenCode V1 (`npm install opencode-multireview-plugin@1`) and uses the `plugin` key and top-level `subagent_depth`.
+
+In 2.x the plugin does not set `experimental.subagent_depth` for you; see [Running a review](#running-a-review). To load a local clone, add the clone's directory, not a file inside it, to `plugins`.
 
 ### Standalone skill install (optional)
 
@@ -129,7 +131,7 @@ The database is created on first use and upgraded with packaged, checksummed, fo
 
 It holds review identity, immutable rounds, findings, dismissal overrides, open questions, and lock metadata. It does **not** store fetched ticket or file content, full diffs, transcripts, or Markdown.
 
-Models are configured per lane in `~/.config/opencode/multireview-plugin.json`. The keys are `coordinator`, `correctness`, `codestyle`, `testing`, and `intent`. Plugin options can override the config path and model choices.
+Models are configured per lane in `~/.config/opencode/multireview-plugin.json`. The keys are `coordinator`, `correctness`, `codestyle`, `testing`, and `intent`. Each model must be a `provider/model` reference; an invalid reference stops the plugin from loading with an error that names the key. Plugin options can override the config path and model choices.
 
 ## Development
 
@@ -143,6 +145,8 @@ npm pack --dry-run
 ```
 
 The test suite is deterministic and never calls a paid or live model. Live-model routing has to be verified by hand.
+
+Four tests load the plugin into a real OpenCode V2 server, with isolated config and data directories and a scripted local model. They run when `opencode` on `PATH` is V2, or when `OPENCODE_V2_BIN` points to a V2 binary; otherwise they are skipped.
 
 ## Publishing
 
